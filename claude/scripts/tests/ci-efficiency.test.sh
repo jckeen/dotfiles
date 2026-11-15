@@ -362,6 +362,30 @@ printf 'on:\n  pull_request:\n' > "$A/notrepo/.github/workflows/ci.yml"
 check "--all counts only git checkouts" 1 "2 checkout(s) with CI config, 1 with findings" --all "$A"
 check "--all names the drifting repo" 1 "bad" --all "$A"
 
+# One bad file is a finding, never a hang or a traceback, and --all goes on.
+new
+wf ci.yml <<'Y'
+on: pull_request
+jobs: &jobs
+  a: *jobs
+Y
+out="$(timeout 10 "$CHECKER" "$R" 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -Fq "cannot confirm"; then pass=$((pass + 1))
+else echo "FAIL a self-containing anchor ends: exit $rc"; printf '%s\n' "$out"; failed=$((failed + 1)); fi
+
+new
+printf '\xff\xfe on: pull_request\n' > "$R/.github/workflows/ci.yml"
+check "a file that is not UTF-8 is a parse finding" 1 "parse   .github/workflows/ci.yml" "$R"
+
+if [ "$(id -u)" -ne 0 ]; then
+  B="$TMP/all2"; mkdir -p "$B/a/.git" "$B/a/.github/workflows" "$B/b/.git" "$B/b/.github/workflows"
+  printf 'on:\n  pull_request:\n' > "$B/a/.github/workflows/ci.yml"; chmod 000 "$B/a/.github/workflows/ci.yml"
+  printf 'on:\n  pull_request:\n' > "$B/b/.github/workflows/ci.yml"
+  check "an unreadable workflow is a parse finding" 1 "parse   .github/workflows/ci.yml" --all "$B"
+  check "--all goes on past an unreadable workflow" 1 "2 checkout(s) with CI config, 2 with findings" --all "$B"
+  chmod 600 "$B/a/.github/workflows/ci.yml"
+fi
+
 check "unknown flag is a usage error" 2 "" --nope
 check "--all without a directory is a usage error" 2 "" --all
 check "missing directory is a usage error" 2 "not a directory" "$TMP/absent"

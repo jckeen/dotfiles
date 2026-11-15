@@ -3,8 +3,8 @@
 
 An aid to the CI cost standard (the full suite runs once per merge, on the
 commit that lands, and every other run is cheap), not a gate: a finding is a
-lead for a person to read, and a clean result proves nothing (see Limits).
-Do not make it a required check. Read-only and offline — it parses the
+lead for a person to read, and a clean result proves nothing (see Limits),
+so it suits a periodic look and not a merge check. Read-only and offline — it parses the
 checkout's .github/ YAML and reads nothing else. Two rules are looked for:
 
   cancel   a workflow triggered by `pull_request` cancels the run a new push
@@ -85,11 +85,17 @@ CANCEL_EXPRESSIONS = (
 
 
 def load(path: Path):
-    """Parse one YAML file; return (document, error text or None)."""
+    """Read and parse one YAML file; return (text, document, error text or None).
+
+    Every way one file can fail (unreadable, gone since it was listed, not
+    UTF-8, not YAML, nested past the parser's depth) becomes an error text, so
+    one bad file is a finding and never ends an --all audit.
+    """
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")), None
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        return None, str(exc).splitlines()[0]
+        text = path.read_text(encoding="utf-8")
+        return text, yaml.safe_load(text), None
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError) as exc:
+        return "", None, (str(exc) or type(exc).__name__).splitlines()[0]
 
 
 def triggers(doc: dict) -> set[str]:
@@ -118,7 +124,7 @@ def cancels(concurrency) -> bool:
     return value is True
 
 
-def marker_reason(path: Path, text: str):
+def marker_reason(text: str):
     """Return the reason text of a no-cancel comment, or None when there is none.
 
     A line inside a block scalar is script data, not a comment, so the YAML
@@ -127,10 +133,16 @@ def marker_reason(path: Path, text: str):
     inside: set[int] = set()
     try:
         stack = [yaml.compose(text)]
-    except yaml.YAMLError:
+    except (yaml.YAMLError, RecursionError):
         return None
+    # An alias makes the node tree a graph, and an anchor may contain itself:
+    # visit each node once.
+    seen: set[int] = set()
     while stack:
         node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
         if isinstance(node, yaml.ScalarNode):
             inside.update(range(node.start_mark.line, node.end_mark.line))
         elif isinstance(node, yaml.SequenceNode):
@@ -146,13 +158,12 @@ def marker_reason(path: Path, text: str):
 
 
 def check_workflow(path: Path, name: str) -> list[str]:
-    text = path.read_text(encoding="utf-8", errors="replace")
-    doc, err = load(path)
+    text, doc, err = load(path)
     if err is not None:
         return [f"  parse   {name}: {err}"]
     if not isinstance(doc, dict) or "pull_request" not in triggers(doc):
         return []
-    reason = marker_reason(path, text)
+    reason = marker_reason(text)
     if reason is not None:
         if not re.search(r"\w", reason):
             return [f"  cancel  {name}: no-cancel marker has no reason"]
@@ -180,7 +191,7 @@ def routine_group(groups) -> bool:
 
 
 def check_dependabot(path: Path, name: str) -> list[str]:
-    doc, err = load(path)
+    _, doc, err = load(path)
     if err is not None:
         return [f"  parse   {name}: {err}"]
     updates = doc.get("updates") if isinstance(doc, dict) else None
@@ -247,8 +258,13 @@ def main(argv: list[str]) -> int:
         print("ci-efficiency: OK" if judged else "ci-efficiency: no CI config to check")
         return 0
 
+    try:
+        repos = sorted(p for p in target.iterdir() if p.is_dir() and (p / ".git").exists())
+    except OSError as exc:
+        print(f"cannot list {target}: {exc}", file=sys.stderr)
+        return 2
     checked = drift = 0
-    for repo in sorted(p for p in target.iterdir() if p.is_dir() and (p / ".git").exists()):
+    for repo in repos:
         found, judged = check_repo(repo)
         if not judged:
             continue
