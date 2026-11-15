@@ -377,6 +377,13 @@ new
 printf '\xff\xfe on: pull_request\n' > "$R/.github/workflows/ci.yml"
 check "a file that is not UTF-8 is a parse finding" 1 "parse   .github/workflows/ci.yml" "$R"
 
+new
+printf 'name: 2026-13-01\non: pull_request\n' > "$R/.github/workflows/ci.yml"
+check "a value PyYAML cannot construct is a parse finding" 1 "parse   .github/workflows/ci.yml" "$R"
+new
+printf 'on: pull_request\nx: %s\n' "$(printf '9%.0s' $(seq 1 5000))" > "$R/.github/workflows/ci.yml"
+check "an oversized integer does not end the audit" 1 "ci.yml" "$R"
+
 if [ "$(id -u)" -ne 0 ]; then
   B="$TMP/all2"; mkdir -p "$B/a/.git" "$B/a/.github/workflows" "$B/b/.git" "$B/b/.github/workflows"
   printf 'on:\n  pull_request:\n' > "$B/a/.github/workflows/ci.yml"; chmod 000 "$B/a/.github/workflows/ci.yml"

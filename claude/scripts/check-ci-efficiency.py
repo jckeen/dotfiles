@@ -94,7 +94,9 @@ def load(path: Path):
     try:
         text = path.read_text(encoding="utf-8")
         return text, yaml.safe_load(text), None
-    except (OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError) as exc:
+    # Deliberately broad: PyYAML's constructors also raise ValueError (a date
+    # such as 2026-13-01, an oversized integer), and the failure is reported.
+    except Exception as exc:  # noqa: BLE001
         return "", None, (str(exc) or type(exc).__name__).splitlines()[0]
 
 
@@ -133,7 +135,7 @@ def marker_reason(text: str):
     inside: set[int] = set()
     try:
         stack = [yaml.compose(text)]
-    except (yaml.YAMLError, RecursionError):
+    except Exception:  # noqa: BLE001 - load() already reported this file
         return None
     # An alias makes the node tree a graph, and an anchor may contain itself:
     # visit each node once.
