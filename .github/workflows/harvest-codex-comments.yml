@@ -72,6 +72,7 @@ jobs:
     # job's `if` verbatim): every other review on the PR gets a group of its
     # own from its run id, so a human's review queued behind a running harvest
     # can never replace the bot's pending run and then skip its own job.
+    # ci-efficiency: no-cancel — a cancelled harvest would lose its items.
     concurrency:
       group: "harvest-codex-comments-${{ (github.event.pull_request.head.repo.full_name == github.repository && ((github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'pull_request_review' && github.event.pull_request.state == 'closed' && github.event.pull_request.merged_at != null && github.event.review.user.login == 'chatgpt-codex-connector[bot]'))) && format('pr-{0}', github.event.pull_request.number) || format('skip-{0}', github.run_id) }}"
       cancel-in-progress: false
