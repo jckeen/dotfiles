@@ -101,6 +101,7 @@ assert() {
 #   adversarial-verification-> "verification is adversarial"
 #   handoff-claim-repro     -> "claim to disprove"
 #   two-floor-grounding     -> "two-floor grounding"
+#   ci-cost                 -> "CI minutes are a budget"
 claude_frag() {
   w agents/canon/fragments/claude.md \
     '# Claude global rules' \
@@ -114,7 +115,8 @@ claude_frag() {
     '- One owner of the working tree at a time.' \
     '- Verification is adversarial, not an echo chamber.' \
     '- A handoff carries the claim to disprove and the exact repro command.' \
-    '- Two-floor grounding: a project floor plus an external floor.'
+    '- Two-floor grounding: a project floor plus an external floor.' \
+    '- Hosted CI minutes are a budget, in every repo.'
 }
 
 # Antigravity side, same concepts in a different voice.
@@ -131,7 +133,8 @@ gemini_frag() {
     '- One owner of the working tree at a time; use a separate worktree.' \
     '- Verification is adversarial: try to break the claim.' \
     '- Ask for the claim to disprove and the exact repro command.' \
-    '- Two-floor grounding: verify a project floor and an external floor.'
+    '- Two-floor grounding: verify a project floor and an external floor.' \
+    '- Hosted CI minutes are a budget, in every repo.'
 }
 
 # Codex side, same concepts in a third voice. $1 optionally names a rule
@@ -161,6 +164,8 @@ codex_frag() {
     || lines+=('- A handoff carries the claim to disprove and the repro command.')
   [[ "$omit" == two-floor-grounding ]] \
     || lines+=('- Two-floor grounding: a project floor and an external floor.')
+  [[ "$omit" == ci-cost ]] \
+    || lines+=('- Hosted CI minutes are a budget, in every repo.')
   w agents/canon/fragments/codex.md "${lines[@]}"
 }
 
@@ -218,7 +223,7 @@ check "bare 'scope' keyword no longer satisfies scoped-edits" 1 "scoped-edits"
 
 # --- Cases 6-9: each lane-contract / two-floor rule can fail independently ---
 for rule in one-owner-worktree adversarial-verification handoff-claim-repro \
-  two-floor-grounding; do
+  two-floor-grounding ci-cost; do
   new_repo
   all_frags "$rule"
   gen

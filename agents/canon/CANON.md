@@ -98,3 +98,21 @@ Claude Code carries the same ownership and verification rules in its fragment.
   the foreground (`BASH_DEFAULT_TIMEOUT_MS=600000`) and either commit/push or
   record an explicit blocker handoff before stopping.
 <!-- /canon:team-hard-rules -->
+
+## CI cost (every local runtime)
+
+<!-- canon:ci-cost -->
+- **Hosted CI minutes are a budget, in every repo.** The target: the full
+  suite runs once per merge and every other run is cheap. With a merge queue
+  that one run is the queue's. Without one it is the pull request's required
+  run, and the default branch may skip a job only when that same job already
+  passed on the identical tree; a job the pull request did not run (one that
+  needs protected secrets, or runs only on the default branch) still runs
+  there. When the task is CI, apply the measures: cancel
+  superseded pull-request runs, group routine dependency updates, and skip a
+  job only by a path rule, behind one always-running required check that
+  fails unless every job passed or was skipped by that rule. When the task is
+  something else, change no CI: file an issue. Required checks, branch
+  protection and merge queues are the operator's decision: propose, never
+  change. Never save minutes by weakening what gates a merge.
+<!-- /canon:ci-cost -->

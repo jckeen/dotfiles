@@ -75,6 +75,8 @@ RULES=(
   "handoff-claim-repro|claim to disprove"
   # Two-floor grounding (#219, ADR-0006):
   "two-floor-grounding|two-floor grounding|project floor.*external floor"
+  # CI cost standard (canon block ci-cost):
+  "ci-cost|CI minutes are a budget"
 )
 
 # Markdown wraps rule sentences across lines; join indented continuation

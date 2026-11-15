@@ -177,6 +177,10 @@ selection, handoff payload, and verdict-persistence mechanics: the
   run lint/types/tests locally, and push when the change is ready for review
   or CI.
 
+## CI cost
+
+<!-- include:ci-cost -->
+
 ## Auth at the boundary
 
 If a service could ever need auth, build it in from the first commit: auth by

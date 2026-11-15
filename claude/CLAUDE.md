@@ -185,6 +185,22 @@ selection, handoff payload, and verdict-persistence mechanics: the
   run lint/types/tests locally, and push when the change is ready for review
   or CI.
 
+## CI cost
+
+- **Hosted CI minutes are a budget, in every repo.** The target: the full
+  suite runs once per merge and every other run is cheap. With a merge queue
+  that one run is the queue's. Without one it is the pull request's required
+  run, and the default branch may skip a job only when that same job already
+  passed on the identical tree; a job the pull request did not run (one that
+  needs protected secrets, or runs only on the default branch) still runs
+  there. When the task is CI, apply the measures: cancel
+  superseded pull-request runs, group routine dependency updates, and skip a
+  job only by a path rule, behind one always-running required check that
+  fails unless every job passed or was skipped by that rule. When the task is
+  something else, change no CI: file an issue. Required checks, branch
+  protection and merge queues are the operator's decision: propose, never
+  change. Never save minutes by weakening what gates a merge.
+
 ## Auth at the boundary
 
 If a service could ever need auth, build it in from the first commit: auth by

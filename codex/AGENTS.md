@@ -91,6 +91,22 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
   the foreground (`BASH_DEFAULT_TIMEOUT_MS=600000`) and either commit/push or
   record an explicit blocker handoff before stopping.
 
+## CI Cost
+
+- **Hosted CI minutes are a budget, in every repo.** The target: the full
+  suite runs once per merge and every other run is cheap. With a merge queue
+  that one run is the queue's. Without one it is the pull request's required
+  run, and the default branch may skip a job only when that same job already
+  passed on the identical tree; a job the pull request did not run (one that
+  needs protected secrets, or runs only on the default branch) still runs
+  there. When the task is CI, apply the measures: cancel
+  superseded pull-request runs, group routine dependency updates, and skip a
+  job only by a path rule, behind one always-running required check that
+  fails unless every job passed or was skipped by that rule. When the task is
+  something else, change no CI: file an issue. Required checks, branch
+  protection and merge queues are the operator's decision: propose, never
+  change. Never save minutes by weakening what gates a merge.
+
 ## Public Safety
 
 - Never commit Codex auth, session logs, sqlite state, shell snapshots, caches,

@@ -38,6 +38,10 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
   personal defaults belong in private preferences. Refute, don't rubber-stamp.
 <!-- include:team-hard-rules -->
 
+## CI Cost
+
+<!-- include:ci-cost -->
+
 ## Teammate Contract
 
 Evidence requirements for audit and review dispatches:
