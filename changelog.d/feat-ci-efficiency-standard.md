@@ -1,4 +1,4 @@
-## 2026-11-14 — feat(ci): a checker for wasted CI runs
+## 2026-11-14 — feat(ci): an advisory audit for wasted CI runs
 
 - **`claude/scripts/check-ci-efficiency.py`** reports where a checkout's CI
   config wastes hosted minutes, for the two cases that can be read from
@@ -10,8 +10,10 @@
   read-only and offline;
   `--all DIR` audits every checkout in a directory. A workflow that must not
   cancel carries a `# ci-efficiency: no-cancel` line with its reason.
-  `pull_request_target` workflows are not judged. CI runs its self-test and
-  runs it on this repo. It follows a month in which the hosted allowance ran
+  `pull_request_target` workflows are not judged. It is advisory: a finding
+  is a lead, a clean result proves nothing, and the script header lists the
+  configs known to pass without cancelling or grouping. CI runs its self-test
+  only; its verdict gates nothing. It follows a month in which the hosted allowance ran
   out two weeks early.
 - `smoke-install.yml` now cancels a superseded pull-request run; a manual run
   keeps a group of its own. `delete-branch-on-close.yml` and

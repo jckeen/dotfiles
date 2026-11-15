@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""check-ci-efficiency.py — report where a repo's CI config wastes hosted minutes.
+"""check-ci-efficiency.py — advisory audit of where a repo's CI config wastes hosted minutes.
 
-The mechanical half of the CI cost standard: the full suite runs once per
-merge, on the commit that lands, and every other run is cheap. Read-only and
-offline — it parses the checkout's .github/ YAML and reads nothing else. Two
-rules can be asserted from files alone:
+An aid to the CI cost standard (the full suite runs once per merge, on the
+commit that lands, and every other run is cheap), not a gate: a finding is a
+lead for a person to read, and a clean result proves nothing (see Limits).
+Do not make it a required check. Read-only and offline — it parses the
+checkout's .github/ YAML and reads nothing else. Two rules are looked for:
 
   cancel   a workflow triggered by `pull_request` cancels the run a new push
            supersedes. Expressions are evaluated by GitHub at run time, so
@@ -26,6 +27,20 @@ The rest of the standard (path-selected jobs behind one aggregate check, no
 repeat run on the default branch, merge queue for long suites) is a design
 decision per repo and is not judged here, so a clean result is not the whole
 standard.
+
+Limits. Cancellation and grouping are decided by GitHub and Dependabot at run
+time; this reads text. Known ways a config passes without doing the thing:
+  - a `group` that names the ref and also a per-run value (github.run_id)
+    is taken as cancelling, though a group that is unique per run cancels
+    nothing. The form `event == 'pull_request' && github.ref || github.run_id`
+    is correct and looks the same from here.
+  - a Dependabot `groups` entry whose patterns match no dependency, or a
+    `multi-ecosystem-group` name that is defined nowhere, counts as grouped.
+  - whitespace is removed from a `cancel-in-progress` expression before it is
+    compared, including inside a quoted value.
+  - a no-cancel marker on the closing line of a quoted multi-line scalar is
+    read as a comment.
+It is not hardened against a config written to fool it.
 
 A workflow that must not cancel, or that cancels in a form the check does not
 recognise, carries a comment line of the form
