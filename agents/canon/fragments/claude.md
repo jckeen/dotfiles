@@ -46,6 +46,10 @@ imported here (see the README's "The private memory repos" section).
   version at code-time — verify every field, param, and scope against the live
   page rather than extrapolating from memory.
 
+## Build standards
+
+<!-- include:build-standards -->
+
 ## Session start
 
 - The harness already loads `CLAUDE.md` and a git status snapshot with recent

@@ -27,6 +27,9 @@ user explicitly asks for an interface change.
 ## Constraints
 
 - Do not add a new abstraction just to remove an old one.
+- A port, adapter or injected dependency that keeps I/O or the clock out of
+  domain logic is not a wrapper to inline or a one-use abstraction to remove,
+  even with one caller (build standards, ADR-0010).
 - Do not churn unrelated files.
 - Do not change behavior to make code look cleaner.
 - Preserve user changes already present in the worktree.

@@ -28,7 +28,7 @@ When given a feature or function to cover:
 - Match the project's existing test framework and patterns — read existing tests first
 - Keep tests focused: one behavior per test, descriptive names
 - Start at the lowest level that can prove the behavior: a pure function called with values, then a module against an in-memory fake, and a database-backed or end-to-end test only for what the lower levels cannot show. If the logic under test is tangled with I/O, say so and name the pure function worth extracting instead of covering it only through the slow path
-- Don't mock what you can call directly — only mock external boundaries (network, DB, filesystem), and prefer an in-memory fake of the boundary over a spy on it
+- Don't mock what you can call directly — only mock external boundaries (network, DB, filesystem), and prefer an in-memory fake of the boundary over a spy on it. Where the code under test imports its dependency instead of taking it as an argument, mock at that import as the existing tests do; never restructure production code to make it fakeable
 - Every test must have a clear assertion — no "smoke tests" that just check nothing throws
 - Assert on results — a returned value, a state change, an output. A test whose only assertion is that a mock was called proves nothing
 - Never test by reading source code — no opening a source file to assert on its imports, names, or text. Call the code; a rule about code shape belongs in the linter, the type checker, or a CI checker
