@@ -454,6 +454,15 @@
       "permissions": []
     },
     {
+      "id": "subagent:test-architect",
+      "type": "subagent",
+      "name": "test-architect",
+      "description": "Audits how a test suite is built — tests that assert source text or mock calls instead of behaviour, tests that cannot fail, pure logic covered only through slow integration paths, string-matching gates propped up by more tests — and returns a remediation plan",
+      "path": "agents/test-architect.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
       "id": "subagent:test-writer",
       "type": "subagent",
       "name": "test-writer",
