@@ -24,6 +24,9 @@ report a local gate or hook as having run.
 - Keep edits scoped to the requested behavior.
 - Verify meaningful changes with the smallest useful test or static check.
 - Report any test you could not run.
+- A test asserts behavior: call the code and check its result. Never assert on
+  source text, or only that a mock was called. Use the lowest test level that
+  proves the change, and a fake over a mock.
 
 ## Build standards
 
