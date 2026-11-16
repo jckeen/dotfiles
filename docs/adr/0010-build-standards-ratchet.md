@@ -65,6 +65,10 @@ disproved that with reproductions, and this ADR is the revision:
 - Ruff 0.16.8 accepts further violations under `per-file-ignores` and on an
   already suppressed line; a ShellCheck disable accepts more inside its scope.
   Those are exemptions, not ratchets. Ruff has no file-length rule.
+- The gate review of this ADR added two more: comparing linter output between
+  trees misses a violation added under an unchanged exemption unless the
+  exemptions are switched off for the comparison, and a scheduled prune
+  cannot make an already stale merged tree pass.
 - Two pull requests that each remove one of two recorded violations merge
   without a text conflict into a tree whose suppressions file is stale, and
   ESLint then fails on the unused suppression.
@@ -125,7 +129,10 @@ branch:
   none. For TypeScript this is the ESLint suppressions file plus a comparison
   of that file with the target branch's copy; for Python and shell, which have
   no count-keeping baseline, it is a comparison of linter output between the
-  two trees;
+  two trees with every existing exemption switched off (inline suppression
+  comments, file-level disables and ignore lists), so a violation added under
+  an unchanged exemption still counts. Where a linter has no switch for that,
+  the check strips the directives from a scratch copy before linting;
 - a change to the lint config, an ignore list or a disable comment is shown
   to the reviewer as a ratchet change.
 
@@ -145,9 +152,11 @@ budget.
    an edit inside existing code follows that code's current shape.
 2. A pilot on repo A that builds the ratchet check and proves it. Acceptance:
    a grown over-budget file fails; a raised or added suppression fails; a new
-   file with a violation fails; and the two-branch case from the critique
-   lands green on the merged tree, by pruning after refreshing against the
-   target branch or by a scheduled prune. The pilot is TypeScript; the
+   file with a violation fails; and in the two-branch case from the critique
+   the stale tree never reaches the target branch: the check runs on the
+   merged result (a merge queue, or a branch required to be current), fails
+   the second pull request on its unused suppression, and passes once that
+   pull request refreshes against the target branch and prunes. The pilot is TypeScript; the
    tree-comparison path for Python and shell is proven at the first adoption
    in each.
 3. A `build-standards` skill with a reference per language (TypeScript,
@@ -173,7 +182,8 @@ pilot, and the pilot tests only the mechanism.
 **Negative**
 - The ratchet is a script we own and must test, not a stock linter feature.
 - The suppressions file changes in most pull requests that touch an old file,
-  and concurrent debt reduction needs the prune step the pilot settles.
+  and concurrent debt reduction costs the later pull request a refresh and a
+  prune before it can merge.
 - Lifecycle, boundary placement and fake fidelity are reviewer judgments, so
   two reviewers can disagree.
 - The ratchet records debt without paying it.
