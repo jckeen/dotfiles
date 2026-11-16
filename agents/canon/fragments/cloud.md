@@ -15,6 +15,10 @@ report a local gate or hook as having run.
 
 <!-- include:working-style-core -->
 
+## Build standards
+
+<!-- include:build-standards -->
+
 ## Verifying a change
 
 - Run the checks this repository's CI workflow runs, not a generic guess at

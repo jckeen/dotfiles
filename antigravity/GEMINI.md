@@ -87,6 +87,39 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
   the foreground (`BASH_DEFAULT_TIMEOUT_MS=600000`) and either commit/push or
   record an explicit blocker handoff before stopping.
 
+## Build Standards
+
+- **Build standards hold in every language (ADR-0010).** Each is enforced by
+  lint where the repo has a rule for it and by review where it has none; the
+  repo's config holds the numbers.
+  - *Size budget:* where the repo's config sets a line budget, a file over it
+    may not grow. A change that would grow it extracts just enough of the
+    code it is editing to keep the file at its current length; that
+    extraction is part of the change, and any wider split is its own change.
+    No configured budget, no size rule.
+  - *Contracts at the boundary:* data entering the application from outside
+    (a request, a webhook, model output, a file, the environment) is validated
+    once, where it enters, by the language's contract mechanism: a runtime
+    schema with the static type derived from it, where the language has one.
+    Internal calls and data already validated are not boundaries.
+  - *Explicit state:* a feature with a lifecycle models it as a tagged union
+    or a transition table, never as loose booleans or one type with many
+    optional fields. A feature with no lifecycle gets no state machine.
+  - *Pure core, injected edges:* domain logic takes its dependencies and the
+    current time as arguments instead of importing network, disk, database or
+    clock. Adapters and orchestration, whose job is the I/O, live in their
+    own modules.
+  - *No type escape hatches:* no `any`-equivalent and no unchecked cast.
+    Narrow with a check or a parse.
+  - *Fakes over mocks:* test domain behaviour against an in-memory
+    implementation of the port, not by spying on which method was called.
+    Rules about who may import what belong in the linter, not the test runner.
+  - *Ratchet:* in a repo that has recorded its baseline, existing violations
+    may only decrease and a new file meets every rule. In one that has not,
+    new files and new functions meet these; an edit inside existing code
+    follows that code's current shape, and nothing existing is rewritten to
+    conform.
+
 ## CI Cost
 
 - **Hosted CI minutes are a budget, in every repo.** The target: the full

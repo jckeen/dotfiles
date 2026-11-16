@@ -102,6 +102,7 @@ assert() {
 #   handoff-claim-repro     -> "claim to disprove"
 #   two-floor-grounding     -> "two-floor grounding"
 #   ci-cost                 -> "CI minutes are a budget"
+#   build-standards         -> "build standards hold in every language"
 claude_frag() {
   w agents/canon/fragments/claude.md \
     '# Claude global rules' \
@@ -116,7 +117,8 @@ claude_frag() {
     '- Verification is adversarial, not an echo chamber.' \
     '- A handoff carries the claim to disprove and the exact repro command.' \
     '- Two-floor grounding: a project floor plus an external floor.' \
-    '- Hosted CI minutes are a budget, in every repo.'
+    '- Hosted CI minutes are a budget, in every repo.' \
+    '- Build standards hold in every language.'
 }
 
 # Antigravity side, same concepts in a different voice.
@@ -134,7 +136,8 @@ gemini_frag() {
     '- Verification is adversarial: try to break the claim.' \
     '- Ask for the claim to disprove and the exact repro command.' \
     '- Two-floor grounding: verify a project floor and an external floor.' \
-    '- Hosted CI minutes are a budget, in every repo.'
+    '- Hosted CI minutes are a budget, in every repo.' \
+    '- Build standards hold in every language.'
 }
 
 # Codex side, same concepts in a third voice. $1 optionally names a rule
@@ -166,6 +169,8 @@ codex_frag() {
     || lines+=('- Two-floor grounding: a project floor and an external floor.')
   [[ "$omit" == ci-cost ]] \
     || lines+=('- Hosted CI minutes are a budget, in every repo.')
+  [[ "$omit" == build-standards ]] \
+    || lines+=('- Build standards hold in every language.')
   w agents/canon/fragments/codex.md "${lines[@]}"
 }
 
@@ -223,7 +228,7 @@ check "bare 'scope' keyword no longer satisfies scoped-edits" 1 "scoped-edits"
 
 # --- Cases 6-9: each lane-contract / two-floor rule can fail independently ---
 for rule in one-owner-worktree adversarial-verification handoff-claim-repro \
-  two-floor-grounding ci-cost; do
+  two-floor-grounding ci-cost build-standards; do
   new_repo
   all_frags "$rule"
   gen

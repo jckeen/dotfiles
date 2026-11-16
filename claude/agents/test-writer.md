@@ -27,7 +27,7 @@ When given a feature or function to cover:
 
 - Match the project's existing test framework and patterns — read existing tests first
 - Keep tests focused: one behavior per test, descriptive names
-- Don't mock what you can call directly — only mock external boundaries (network, DB, filesystem)
+- Don't mock what you can call directly. For domain behavior, use an in-memory fake of the port rather than a mock or spy; keep mocks for adapter and contract tests at a real external boundary (network, DB, filesystem). Where the code under test imports its dependency instead of taking it as an argument, mock at that import as the existing tests do; never restructure production code to make it fakeable
 - Every test must have a clear assertion — no "smoke tests" that just check nothing throws
 - Run the tests after writing them to verify they pass (or fail, for bug reproduction)
 

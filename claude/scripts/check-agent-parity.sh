@@ -77,6 +77,8 @@ RULES=(
   "two-floor-grounding|two-floor grounding|project floor.*external floor"
   # CI cost standard (canon block ci-cost):
   "ci-cost|CI minutes are a budget"
+  # Build standards (canon block build-standards, ADR-0010):
+  "build-standards|build standards hold in every language"
 )
 
 # Markdown wraps rule sentences across lines; join indented continuation
