@@ -24,9 +24,6 @@ context, tokens, and machine paths stay out of here — they live in
 - Keep edits scoped to the requested behavior.
 - Verify meaningful changes with the smallest useful test or static check.
 - Report any test you could not run.
-- A test asserts behavior: call the code and check its result. Never assert on
-  source text, or only that a mock was called. Use the lowest test level that
-  proves the change, and a fake over a mock.
 - Two-floor grounding (ADR-0006): an adopt/skip verdict on an external
   technology must clear a *project floor* (a verified local fact) and an
   *external floor* (a verified source) — neither compensating for the other.

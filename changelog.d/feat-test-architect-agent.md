@@ -1,4 +1,4 @@
-## 2026-11-16 — feat(agents): a test-architect agent and a test-quality rule
+## 2026-11-16 — feat(agents): a test-architect agent
 
 - **`test-architect`** is a new read-only agent that audits how a test suite
   is built. It flags tests that read source files and assert on their text,
@@ -12,6 +12,3 @@
 - **`test-writer`** now writes to the same standard: lowest test level first,
   an in-memory fake over a spy, assertions on results, and no tests that read
   source code.
-- The shared instructions for Claude Code, Codex, Antigravity and cloud agents
-  carry one rule — a test asserts behavior — and `check-agent-parity.sh`
-  asserts it stays in all of them.
