@@ -39,8 +39,9 @@ three largest repos red on its first run.
 
 - **ESLint bulk suppressions** — `https://eslint.org/docs/latest/use/suppressions`:
   `--suppress-all` records every existing violation of a rule configured as
-  `"error"` in `eslint-suppressions.json` at the project root; new code is
-  still enforced; a suppression that is no longer needed makes ESLint exit
+  `"error"` in `eslint-suppressions.json` at the project root; suppression
+  allowances are counts per file and rule, not proof that newly added code
+  is clean; a suppression that is no longer needed makes ESLint exit
   non-zero until `--prune-suppressions` removes it.
 - **typescript-eslint `consistent-type-assertions`** —
   `https://typescript-eslint.io/rules/consistent-type-assertions/`:
@@ -65,10 +66,15 @@ disproved that with reproductions, and this ADR is the revision:
 - Ruff 0.16.8 accepts further violations under `per-file-ignores` and on an
   already suppressed line; a ShellCheck disable accepts more inside its scope.
   Those are exemptions, not ratchets. Ruff has no file-length rule.
-- The gate review of this ADR added two more: comparing linter output between
-  trees misses a violation added under an unchanged exemption unless the
-  exemptions are switched off for the comparison, and a scheduled prune
-  cannot make an already stale merged tree pass.
+- The gate review of this ADR found three more over three rounds, all one
+  family: a violation added under an unchanged exemption is invisible to a
+  comparison of ordinary linter output, in Python and shell and equally under
+  an ESLint disable comment; and a scheduled prune cannot make an already
+  stale merged tree pass. The Decision therefore states guarantees and an
+  explicit out-of-scope list instead of a mechanism. A second Codex critique
+  (2026-11-16, default model) swept every known channel against the
+  guarantees and supplied the file-identity rule, the incomplete-measurement
+  rule and the wording of guarantees 3 and 4.
 - Two pull requests that each remove one of two recorded violations merge
   without a text conflict into a tree whose suppressions file is stale, and
   ESLint then fails on the unused suppression.
@@ -87,11 +93,11 @@ compares each pull request with its target branch.
 
 | Shape | Checked by |
 |---|---|
-| Size budget: a file over its line budget may not grow | ratchet script (line counts against the target branch) |
-| Contracts at the boundary: outside data is validated once, where it enters | review; lint only for the cast and `any` bans that force it |
+| Size budget: a file over its line budget may not grow | the ratchet check (guarantee 1 below) |
+| Contracts at the boundary: outside data is validated once, where it enters | review; lint can prohibit configured casts and uses of `any`, but cannot establish that boundary validation happens or is correct |
 | Explicit state: a lifecycle is a tagged union or transition table | review |
 | Pure core, injected edges: domain logic imports no I/O or clock | lint import and global restrictions on declared domain paths; review for effects reached through a wrapper |
-| No type escape hatches | lint and the type checker |
+| No type escape hatches | lint and the type checker for configured cases; review for unchecked trust in declarations and user-defined narrowing |
 | Fakes over mocks; structure rules in the linter | lint for spy and mock calls in declared domain tests; review for whether a fake is faithful |
 
 The canon block therefore says "lint where the repo has a rule, review where
@@ -116,25 +122,55 @@ React props and already validated data are not boundaries. Schema and logic
 are separate responsibilities, and separate files where the repo's lint config
 says so.
 
-**The ratchet mechanism.** Per-repo adoption commits a machine-readable
-config: included paths, exclusions (generated and vendored output, type
-declarations, fixtures, snapshots, applied migrations), a line budget per
-category (source, UI component, test), how lines are counted, and which paths
-are domain logic. A check then compares the pull request with its target
+**What the ratchet must guarantee.** This ADR fixes the guarantees and leaves
+the mechanism to the pilot, because three review rounds each found a way
+round a mechanism described in prose. Per-repo adoption commits a
+machine-readable config: included paths, exclusions (generated and vendored
+output, type declarations, fixtures, snapshots, applied migrations), a line
+budget per category (source, UI component, test), how lines are counted, and
+which paths are domain logic. A check then holds, for every included file in
+every language, comparing the pull request's merged result with its target
 branch:
 
-- line count of each included file is at most the larger of its budget and
-  its line count on the target branch; a new file gets the budget only;
-- lint diagnostics per file and rule do not increase, and a new file has
-  none. For TypeScript this is the ESLint suppressions file plus a comparison
-  of that file with the target branch's copy; for Python and shell, which have
-  no count-keeping baseline, it is a comparison of linter output between the
-  two trees with every existing exemption switched off (inline suppression
-  comments, file-level disables and ignore lists), so a violation added under
-  an unchanged exemption still counts. Where a linter has no switch for that,
-  the check strips the directives from a scratch copy before linting;
-- a change to the lint config, an ignore list or a disable comment is shown
-  to the reviewer as a ratchet change.
+File identity is its repository-relative path: a path absent from the target
+tree is new, including a rename or a copy; no allowance transfers between
+paths, and a deleted path keeps none.
+
+1. **No growth.** A file over its budget is no longer than it is on the
+   target branch. A new file is within budget.
+2. **No new violations, counted with exemptions off.** The number of
+   diagnostics per file and rule does not increase, and a new file has none.
+   The count is taken with every in-source exemption ignored (inline
+   suppression comments, file-level disables, type-checker ignore and
+   configuration comments) and with no per-path ignore list applied, so a
+   violation added under an existing exemption counts the same as one added
+   in the open. A missing or incomplete measurement, including analysis
+   stopped by a parse or tool failure, fails the check; it is not debt to
+   record. Scope that is meant to go unmeasured is an explicit, reviewed
+   exclusion.
+3. **The baseline cannot be loosened by the change it gates.** Allowed counts
+   come from measuring the target tree under the comparison policy. Any
+   stored baseline must agree with those measurements, and reductions in the
+   merged result become the next target's limits.
+4. **Enforcement changes are reviewed.** Both trees are measured under the
+   same identified enforcement policy. A change to the policy or to the
+   machinery that enforces it (effective path classification, rule settings,
+   counting, toolchain, invocation, the checker's own code) needs
+   machine-verifiable reviewer approval, bound to the exact revisions
+   compared and verified outside the pull request's control. That approval
+   waives none of the other guarantees.
+
+Out of scope, stated so it is not mistaken for a guarantee: the ratchet
+counts violations and does not track their identity, so replacing one
+violation with another of the same rule in the same file passes; it measures
+only what a configured rule or the line counter can see, so the reviewed
+shapes in the table above are not ratcheted; and it does not judge whether an
+approved enforcement policy or path classification is appropriate: code in an
+excluded path, including new, copied or relocated code, is outside what it
+measures.
+
+ESLint bulk suppressions are a candidate for recording TypeScript counts, not
+the mechanism: used alone they fail guarantees 1, 2 and 3.
 
 SQL is outside the size and pure-core shapes: its contracts are the database's
 types and constraints, and applied migrations are never rewritten for a
@@ -150,15 +186,28 @@ budget.
    tests, and never restructures production code to make it fakeable. Until a
    repo adopts the ratchet the block binds new files and new functions only;
    an edit inside existing code follows that code's current shape.
-2. A pilot on repo A that builds the ratchet check and proves it. Acceptance:
-   a grown over-budget file fails; a raised or added suppression fails; a new
-   file with a violation fails; and in the two-branch case from the critique
-   the stale tree never reaches the target branch: the check runs on the
-   merged result (a merge queue, or a branch required to be current), fails
-   the second pull request on its unused suppression, and passes once that
-   pull request refreshes against the target branch and prunes. The pilot is TypeScript; the
-   tree-comparison path for Python and shell is proven at the first adoption
-   in each.
+2. A pilot on repo A that builds the check and demonstrates both permitted
+   changes and rejected regressions:
+   - *size:* unchanged existing debt passes; growth above the budget,
+     crossing the budget and an oversized new file fail;
+   - *diagnostics:* an ordinary addition, an addition under each supported
+     exemption mechanism, a per-path suppression and a new file with a
+     violation all fail, for each adopted linter and type checker;
+   - *identity:* rename, copy, deletion and recreation;
+   - *baseline:* a pull request's self-raised allowance fails, and so does
+     reintroducing debt after an earlier merge reduced it, even when a stored
+     baseline is stale;
+   - *enforcement changes:* category and exclusion changes, counting changes,
+     and changes to the checker, its invocation or the toolchain fail with
+     missing or stale approval and pass with valid approval only when the
+     other guarantees hold;
+   - *measurement:* a missing or incomplete measurement fails;
+   - *concurrency:* two debt reductions can both merge after verification
+     against the current target, and a result checked against an earlier
+     target cannot authorize the later merge.
+
+   The TypeScript pilot establishes these first; each Python and shell
+   adoption establishes the applicable cases for its tools.
 3. A `build-standards` skill with a reference per language (TypeScript,
    Python, shell): lint rules, contract mechanism, ratchet setup, and the
    builder hand-off line that `decompose` and `orchestrate` put in briefs.
@@ -176,19 +225,19 @@ pilot, and the pilot tests only the mechanism.
 - Every builder and reviewer on every runtime, cloud included, reads the same
   shapes.
 - The numbers live in per-repo config that CI asserts, not in prose.
-- Adoption does not require wholesale refactoring, and no repo's CI turns red
-  on the day it adopts.
+- Adoption records existing measurable debt without requiring wholesale
+  refactoring; the adoption pull request must show the adopted checks pass.
 
 **Negative**
 - The ratchet is a script we own and must test, not a stock linter feature.
-- The suppressions file changes in most pull requests that touch an old file,
-  and concurrent debt reduction costs the later pull request a refresh and a
-  prune before it can merge.
+- Baseline maintenance and concurrent debt reduction may need extra work; the
+  pilot establishes those costs, and every merge needs verification against
+  the current target.
 - Lifecycle, boundary placement and fake fidelity are reviewer judgments, so
   two reviewers can disagree.
 - The ratchet records debt without paying it.
-- A fix in an over-budget file carries a small extraction it would not
-  otherwise need.
+- A fix that would grow an over-budget file needs enough extraction to
+  satisfy the size rule.
 - Structure tests that read source files stay in the test runner until each
   is ported to a lint rule. Repos with no lint config need one first.
 
