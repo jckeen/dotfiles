@@ -21,7 +21,7 @@ Phase 2 — Architecture and implementation:
 Spawn frontend-architect, backend-architect, content-reviewer, security-reviewer agents in parallel.
 
 Phase 3 — Launch hardening:
-Spawn qa-lead, perf-accessibility, launch-operator, code-simplifier agents in parallel.
+Spawn qa-lead, test-architect, perf-accessibility, launch-operator, code-simplifier agents in parallel.
 
 After all phases complete, produce a unified report:
 - CRITICAL issues (must fix before shipping)

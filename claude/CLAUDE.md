@@ -67,6 +67,10 @@ imported here (see the README's "The private memory repos" section).
   could not run rather than silently skipping it.
 - Address root causes, not symptoms. When fixing a bug, write a failing test
   that reproduces it first, then fix it.
+- A test asserts behavior: call the code and check its result. Never assert on
+  source text, or only that a mock was called. Use the lowest test level that
+  proves the change, and a fake over a mock. The `test-architect` agent audits
+  a suite or a diff's tests against this; `test-writer` writes to it.
 - Audit during the build, not at a final gate. The moment a risky surface (auth,
   path/host handling, file IO, schemas, hash chains) has a complete first draft,
   run the security/review pass then — in parallel with continuing. Auditing at
