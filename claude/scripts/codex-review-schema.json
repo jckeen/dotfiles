@@ -6,7 +6,8 @@
     "verdict",
     "summary",
     "findings",
-    "next_steps"
+    "next_steps",
+    "coverage"
   ],
   "properties": {
     "verdict": {
@@ -34,7 +35,8 @@
           "line_start",
           "line_end",
           "confidence",
-          "recommendation"
+          "recommendation",
+          "supporting_locations"
         ],
         "properties": {
           "severity": {
@@ -77,6 +79,39 @@
           },
           "recommendation": {
             "type": "string"
+          },
+          "supporting_locations": {
+            "type": "array",
+            "maxItems": 40,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "file",
+                "line_start",
+                "line_end",
+                "note"
+              ],
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
+                },
+                "line_start": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "line_end": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "note": {
+                  "type": "string",
+                  "maxLength": 600
+                }
+              }
+            }
           }
         }
       }
@@ -86,6 +121,42 @@
       "items": {
         "type": "string",
         "minLength": 1
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "examined",
+        "limitations"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "incomplete"
+          ]
+        },
+        "examined": {
+          "type": "array",
+          "maxItems": 60,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "maxItems": 60,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          }
+        }
       }
     }
   }

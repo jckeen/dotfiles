@@ -83,7 +83,10 @@ Plan → Build → Verify → Simplify → Review → Log → Handoff
 > (`codex-review-gate.sh` → `codex exec --output-schema`, structured JSON over
 > a gate-computed, injection-fenced diff) between staging and commit. It
 > **blocks the push on critical/high/medium findings** and **files a GitHub
-> issue per low finding** so nothing is lost. Adversarial mode:
+> issue per low finding** so nothing is lost. The reviewer maps every path that
+> depends on a changed contract and reports each place a defect occurs; a
+> review that says it did not examine the whole change is **not an approval**
+> (#787). Adversarial mode:
 > `--claim "<claim>" --repro "<cmd>"` makes the reviewer refute a specific
 > claim. The merge gate is that Codex review **+ CI green** (ADR-0003). If
 > Codex can't run it degrades open (won't wedge a push); set
