@@ -1405,7 +1405,7 @@ def retain(args):
             raise ValueError("retained review store must be a real directory")
         directory.mkdir(mode=0o700, exist_ok=True)
         os.chmod(directory, 0o700)
-        path = directory / ("%s.%s.%s.json" % (key, lane, digest(data)[:16]))
+        path = directory / f"{key}.{lane}.{digest(data)[:16]}.json"
         fd, temporary = tempfile.mkstemp(prefix=".review-", dir=str(directory))
         try:
             with os.fdopen(fd, "wb") as stream:

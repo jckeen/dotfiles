@@ -236,6 +236,9 @@ retain_review() {
 }
 # How a finding is written out (#788). Every field the schema validates is
 # printed, none shortened; the retained output holds the original bytes.
+# Everything the reviewer wrote reaches the terminal through `shown`: the
+# findings, the summary, the coverage limitations, the next steps and the
+# dump of an output that failed validation.
 #   shown       control characters other than newline and tab become U+FFFD,
 #               so reviewer text cannot drive the terminal
 #   for_terminal  one finding for the run output
@@ -961,14 +964,14 @@ gate_assert_unchanged
 # receipt (review_output_check, above).
 if ! review_output_check schema "$OUT_FILE"; then
   red "✖ Codex output is not the expected JSON shape (unknown verdict, malformed finding, or unknown severity):"
-  sed -n '1,30{s/^/  /;p;}' "$OUT_FILE"
+  sed -n '1,30p' "$OUT_FILE" | jq -Rr "$FINDING_JQ"'"  " + shown'
   red "Push blocked: cannot confirm review is clean."
   gate_block
   exit 2
 fi
 
 VERDICT="$(jq -r '.verdict' "$OUT_FILE")"
-SUMMARY="$(jq -r '.summary' "$OUT_FILE")"
+SUMMARY="$(jq -r "$FINDING_JQ"'.summary | shown | hang("    ")' "$OUT_FILE")"
 N_BLOCK="$(jq '[.findings[] | select(.severity == "critical" or .severity == "high" or .severity == "medium")] | length' "$OUT_FILE")"
 N_LOW="$(jq '[.findings[] | select(.severity == "low")] | length' "$OUT_FILE")"
 N_TOTAL=$((N_BLOCK + N_LOW))
@@ -1006,6 +1009,14 @@ n_filed=0 n_commented=0 n_accepted=0 n_undelivered=0 n_unpublished=0
 # issue title or a log line. The whole title is in the rendered finding.
 finding_heading() {
   jq -r --argjson i "$1" '.findings[$i].title | gsub("\\p{Cc}"; " ") | .[0:200]' "$OUT_FILE"
+}
+
+# finding_file <index> — set FINDING_FILE to the finding's file name exactly
+# as the reviewer wrote it. The sentinel keeps a trailing newline that a
+# command substitution would drop.
+finding_file() {
+  FINDING_FILE="$(jq -j --argjson i "$1" '.findings[$i].file + "."' "$OUT_FILE")"
+  FINDING_FILE="${FINDING_FILE%.}"
 }
 
 # publish_finding create|comment <issue-number> <title> <text-file> <footer-file>
@@ -1086,21 +1097,23 @@ if [[ "$N_LOW" -gt 0 ]]; then
     # working for every file in it. A category is reviewer text: it is reduced
     # to a slug in jq before it reaches a title, and it only ever groups.
     # Indexed arrays and linear scans, not associative arrays: bash 3.2.
-    # A row is what grouping and dedup need and nothing else: the finding's
-    # index in .findings (counted before the severity filter, so it addresses
-    # the same finding in every later jq call), the category slug, the file
-    # and the line. The words of a finding never pass through a row, where
-    # @tsv would turn a newline into a backslash and an n. No column is ever
-    # empty, because read collapses adjacent tabs.
+    # A row is the finding's index in .findings (counted before the severity
+    # filter, so it addresses the same finding in every later jq call) and
+    # its category slug. Nothing the reviewer wrote passes through a row,
+    # where @tsv would turn a backslash into two and a newline into a
+    # backslash and an n: the file name that identifies a location is read
+    # from the JSON (finding_file), so the marker written for it and the
+    # marker looked up for it are the same text. No column is ever empty,
+    # because read collapses adjacent tabs.
     low_rows="$(jq -r '.findings | to_entries[] | select(.value.severity == "low")
       | [(.key | tostring),
          (.value.category | ascii_downcase | gsub("[^a-z0-9]+"; "-") | sub("^-"; "") | .[0:40] | sub("-$"; "")
-          | if . == "" then "uncategorized" else . end),
-         .value.file, (.value.line_start | tostring)] | @tsv' "$OUT_FILE")"
+          | if . == "" then "uncategorized" else . end)] | @tsv' "$OUT_FILE")"
     # Pass 1: which categories have new findings in two or more distinct files.
     new_cats=() new_files=() group_cats=() done_pairs=()
-    while IFS=$'\t' read -r index category file _; do
+    while IFS=$'\t' read -r index category; do
       [[ -z "$index" ]] && continue
+      finding_file "$index"; file="$FINDING_FILE"
       read -r match number <<<"$(gate_issue_lookup "$file")"
       [[ "$match" == "none" ]] || continue
       seen=false
@@ -1113,8 +1126,9 @@ if [[ "$N_LOW" -gt 0 ]]; then
       done
       [[ "$seen" == true ]] || { new_cats+=("$category"); new_files+=("$file"); }
     done <<<"$low_rows"
-    while IFS=$'\t' read -r index category file _; do
+    while IFS=$'\t' read -r index category; do
       [[ -z "$index" ]] && continue
+      finding_file "$index"; file="$FINDING_FILE"
       # A finding already filed with its group in this run needs nothing more:
       # without this it would comment "seen again" on the issue that lists it.
       skip=false
@@ -1171,8 +1185,9 @@ if [[ "$N_LOW" -gt 0 ]]; then
         # reviewer's order; each distinct file gets its own marker.
         markers="" n_items=0
         : >"$text_file.items"
-        while IFS=$'\t' read -r g_index g_cat g_file _; do
+        while IFS=$'\t' read -r g_index g_cat; do
           [[ "$g_cat" == "$category" && -n "$g_index" ]] || continue
+          finding_file "$g_index"; g_file="$FINDING_FILE"
           read -r g_match _ <<<"$(gate_issue_lookup "$g_file")"
           [[ "$g_match" == "none" ]] || continue
           n_items=$((n_items + 1))
@@ -1243,7 +1258,7 @@ fi
 if [[ "$N_BLOCK" -gt 0 ]]; then
   if ! review_output_check complete "$OUT_FILE"; then
     yellow "  The reviewer also reports that it did not examine the whole change:"
-    jq -r '.coverage.limitations[] | "    not examined: \(.)"' "$OUT_FILE"
+    jq -r "$FINDING_JQ"'.coverage.limitations[] | "    not examined: \(shown | hang("      "))"' "$OUT_FILE"
     echo ""
   fi
   red "Push blocked by codex-review-gate ($N_BLOCK blocking finding(s))."
@@ -1258,7 +1273,7 @@ if ! review_output_check complete "$OUT_FILE"; then
   red "✖ Codex reports an incomplete review — not an approval:"
   echo "  Summary: $SUMMARY"
   echo "  Coverage status: $(jq -r '.coverage.status' "$OUT_FILE"); areas examined: $(jq '.coverage.examined | length' "$OUT_FILE")"
-  jq -r '.coverage.limitations[] | "  not examined: \(.)"' "$OUT_FILE"
+  jq -r "$FINDING_JQ"'.coverage.limitations[] | "  not examined: \(shown | hang("    "))"' "$OUT_FILE"
   red "Push blocked: the reviewer did not examine the whole change (fail closed)."
   gate_block
   exit 2
@@ -1271,7 +1286,7 @@ fi
 if [[ "$VERDICT" != "approve" && "$N_TOTAL" -eq 0 ]]; then
   red "✖ Codex verdict is \"$VERDICT\" with no blocking findings listed."
   echo "  Summary: $SUMMARY"
-  jq -r '.next_steps[]? | "  next: \(.)"' "$OUT_FILE"
+  jq -r "$FINDING_JQ"'.next_steps[]? | "  next: \(shown | hang("    "))"' "$OUT_FILE"
   red "Push blocked: reviewer flagged the change (fail closed)."
   gate_block
   exit 2

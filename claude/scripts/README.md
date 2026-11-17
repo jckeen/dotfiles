@@ -399,7 +399,8 @@ Low-severity findings never block a push; the gate files them as GitHub issues
 so they are not lost. Dedup is keyed on the **location** — the file a finding
 points at — not on its title, because Codex rewords titles between runs and a
 title-keyed dedup once filed one fixture finding sixteen times. Every filed
-issue carries a hidden `<!-- codex-gate-loc:<owner/repo>:<file> -->` marker;
+issue carries a hidden `<!-- codex-gate-loc:<owner/repo>:<file> -->` marker
+(the file name percent-encoded where it could be read as comment syntax);
 before filing, the gate fetches the repo's `codex-review` issues once and
 matches on that marker:
 

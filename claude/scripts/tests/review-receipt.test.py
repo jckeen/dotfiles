@@ -3193,7 +3193,9 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.assertEqual(list(elsewhere.iterdir()), [])
 
     def retain(self, snapshot, output, ok=True):
-        return self.run_helper("retain", "--snapshot", str(snapshot), "--output", str(output), ok=ok)
+        return self.run_helper(
+            "retain", "--snapshot", str(snapshot), "--output", str(output), ok=ok
+        )
 
     def test_retain_keeps_the_output_bytes(self):
         """The record is the reviewer's output exactly, bytes no text decoder accepts included (#788)."""
@@ -3212,7 +3214,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         snapshot = self.capture(reviewer="codex")
         paths = []
         for number in range(33):
-            output.write_text("review %d" % number)
+            output.write_text(f"review {number}")
             paths.append(Path(self.retain(snapshot, output)))
             os.utime(paths[-1], ns=(number * 10**9, number * 10**9))
         kept = set((self.receipts_dir() / "reviews").glob("*.json"))

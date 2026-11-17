@@ -47,9 +47,18 @@
   exists, and the gate prints the path. A blocking, failed or cancelled
   review used to leave its findings only in the terminal. The record is
   evidence only and never decides a verdict.
+- **Location markers are data (#790).** A file name is percent-encoded in
+  its marker (`%`, `<`, `>` and control characters), so a name can neither
+  end the marker nor spell a second one, and two names never share a marker.
+  The name is read from the reviewer's JSON, not from a tab-separated row, so
+  the marker written for a path containing a backslash is the one the next
+  run looks up. Markers for ordinary paths are unchanged; an issue filed
+  earlier for a path containing one of those characters is filed once more.
+- **Reviewer text cannot drive the terminal.** The findings, the summary, the
+  coverage limitations, the next steps and the dump of an output that failed
+  validation all print through one filter that replaces control characters.
 - **Not covered**: output the reviewer never finished writing, a killed
   process or a full disk; the Antigravity gate; the rule that acceptance is
-  per file; the marker form for a path containing a backslash (#790); how
-  many comments repeated runs add to one open issue.
+  per file; how many comments repeated runs add to one open issue.
 - A receipt recorded before this change stays valid: `check` reads the stored
   review's digest, not its shape.

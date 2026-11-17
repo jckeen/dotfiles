@@ -489,17 +489,30 @@ GATE_ISSUE_NO_REASON="-"
 
 # gate_issue_marker <file> — the exact marker text for a location.
 gate_issue_marker() {
-  # The marker is an HTML comment; strip control characters and the closing
-  # sequence so a reviewer-supplied path cannot terminate it early.
-  local file
-  file="$(printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/-->//g')"
+  # The marker is an HTML comment and lookups match it as a substring, so the
+  # file name is written as data that cannot contain comment syntax: `%`, `<`
+  # and `>` and every control character are percent-encoded. A name can then
+  # neither end the comment early nor spell a second marker inside it, and two
+  # different names never share a marker. Ordinary paths are unchanged.
+  local file="$1" encoded="" char i
+  file="${file//%/%25}"
+  file="${file//</%3C}"
+  file="${file//>/%3E}"
+  if [[ "$file" == *[[:cntrl:]]* ]]; then
+    for ((i = 0; i < ${#file}; i++)); do
+      char="${file:i:1}"
+      [[ "$char" != [[:cntrl:]] ]] || printf -v char '%%%02X' "'$char"
+      encoded+="$char"
+    done
+    file="$encoded"
+  fi
   printf '<!-- codex-gate-loc:%s:%s -->' "$GATE_ISSUE_REPO" "$file"
 }
 
 # gate_issue_index_marker <file> — the marker as it appears in GATE_ISSUE_INDEX.
 # The index is jq @tsv output, which doubles backslashes (and encodes tab, LF
-# and CR as \t \n \r, none of which survive gate_issue_marker's control-byte
-# strip), and `read -r` keeps those escapes literal. Lookups and in-run records
+# and CR as \t \n \r, none of which gate_issue_marker leaves in a marker),
+# and `read -r` keeps those escapes literal. Lookups and in-run records
 # must use this form or a path containing a backslash never matches: its open
 # issue would be refiled every run and a not-planned closure would not suppress.
 gate_issue_index_marker() {

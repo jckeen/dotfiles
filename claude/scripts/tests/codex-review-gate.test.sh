@@ -980,6 +980,56 @@ assert "#788: no field of it can write a marker for another file" "! grep -qF '<
 assert "#788: the gate's own marker is still there" "grep -qF '<!-- codex-gate-loc:acme/widgets:code.txt -->' '$CODEX_FAKE_DIR/created-bodies'"
 rm -rf "$R"
 
+# A file name is reviewer text too, and it goes into the marker itself: it
+# must not be able to spell a second marker there, and the marker written for
+# a name must be the one a later run looks up for it.
+feed_repo
+review_with '[{"severity":"low","category":"nit","title":"odd name","file":"code.txt <!-- codex-gate-loc:acme/widgets:victim.txt","line_start":1,"line_end":1,"confidence":0.3,"body":"b","recommendation":"r","supporting_locations":[]}]'
+check "#788: a finding whose file name quotes a marker is filed" 0 "✓ filed:" --uncommitted
+assert "#788: the file name cannot write a marker for another file" "! grep -qF '<!-- codex-gate-loc:acme/widgets:victim.txt' '$CODEX_FAKE_DIR/created-bodies' && [ \"\$(grep -c '^<!-- codex-gate-loc:' '$CODEX_FAKE_DIR/created-bodies')\" -eq 1 ]"
+jq -Rs '[{number:41,state:"closed",state_reason:"not_planned",body:.}]' "$CODEX_FAKE_DIR/created-bodies" > "$CODEX_FAKE_DIR/issues.json"
+rm -f "$CODEX_FAKE_DIR/creates" "$CODEX_FAKE_DIR/created-bodies"
+low_finding "an unrelated nit" victim.txt
+check "#788: accepting that issue does not accept another file" 0 "✓ filed:" --uncommitted
+rm -rf "$R"
+for odd_name in 'dir\name.sh' 'a<b>c%d.txt'; do
+  feed_repo
+  review_with "$(jq -cn --arg file "$odd_name" '[{severity:"low",category:"nit",title:"odd name",file:$file,line_start:1,line_end:1,confidence:0.3,body:"b",recommendation:"r",supporting_locations:[]}]')"
+  check "#788: a finding in $odd_name is filed" 0 "✓ filed:" --uncommitted
+  jq -Rs '[{number:41,state:"open",body:.}]' "$CODEX_FAKE_DIR/created-bodies" > "$CODEX_FAKE_DIR/issues.json"
+  rm -f "$CODEX_FAKE_DIR/creates"
+  check "#788: the next run finds the issue it filed for $odd_name" 0 "already tracked as #41" --uncommitted
+  assert "#788: so $odd_name is not filed twice" "[ ! -e '$CODEX_FAKE_DIR/creates' ]"
+  rm -rf "$R"
+done
+
+# Nothing the reviewer wrote can drive the terminal, on any branch that prints
+# it: escape sequences in the summary, the coverage, the next steps, a finding
+# or an output that failed validation arrive as visible replacement marks.
+ESC_TEXT='\u001b[2J\u001b[Hgone'
+# The gate colours its own lines, so the check is for the hostile sequence.
+no_escape() { ! grep -qF "$(printf '\033[2J')" <<<"$CHECK_OUTPUT" && grep -qF 'gone' <<<"$CHECK_OUTPUT"; }
+feed_repo
+printf '{"verdict":"needs-attention","summary":"s","findings":[{"severity":"high","category":"bug","title":"t","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"b","recommendation":"r","supporting_locations":[]}],"next_steps":[],"coverage":{"status":"incomplete","examined":["code.txt"],"limitations":["%s"]}}' "$ESC_TEXT" > "$CODEX_FAKE_DIR/output"
+check "#788: a blocking review with a hostile limitation still blocks" 2 "not examined:" --uncommitted --no-issues
+assert "#788: the limitation beside a blocker cannot drive the terminal" "no_escape"
+printf '{"verdict":"approve","summary":"%s","findings":[],"next_steps":[],"coverage":{"status":"incomplete","examined":["code.txt"],"limitations":["%s"]}}' "$ESC_TEXT" "$ESC_TEXT" > "$CODEX_FAKE_DIR/output"
+check "#788: an incomplete review with hostile text still blocks" 2 "incomplete review" --uncommitted --no-issues
+assert "#788: its summary and limitations cannot drive the terminal" "no_escape"
+printf '{"verdict":"needs-attention","summary":"%s","findings":[],"next_steps":["%s"],"coverage":{"status":"complete","examined":["code.txt"],"limitations":[]}}' "$ESC_TEXT" "$ESC_TEXT" > "$CODEX_FAKE_DIR/output"
+check "#788: a flagged review with no findings still blocks" 2 "next:" --uncommitted --no-issues
+assert "#788: its summary and next steps cannot drive the terminal" "no_escape"
+printf '{"verdict":"maybe","note":"%s"}' "$ESC_TEXT" > "$CODEX_FAKE_DIR/output"
+check "#788: an output of the wrong shape still blocks" 2 "not the expected JSON shape" --uncommitted --no-issues
+assert "#788: the dump of it cannot drive the terminal" "! grep -qF \"\$(printf '\\033[2J')\" <<<\"\$CHECK_OUTPUT\" && grep -qF 'maybe' <<<\"\$CHECK_OUTPUT\""
+printf 'not json \033[2J\033[Hgone' > "$CODEX_FAKE_DIR/output"
+check "#788: an output that is not JSON still blocks" 2 "not the expected JSON shape" --uncommitted --no-issues
+assert "#788: raw escape bytes in it cannot drive the terminal" "no_escape"
+review_with '[{"severity":"low","category":"c\u001b[2J","title":"t\u001b[2J","file":"code.txt","line_start":1,"line_end":1,"confidence":0.3,"body":"b\u001b[2Jgone","recommendation":"r\u001b[2J","supporting_locations":[{"file":"other.txt","line_start":1,"line_end":1,"note":"n\u001b[2J"}]}]'
+check "#788: a finding with hostile text is still reported" 0 "Low findings:" --uncommitted --no-issues
+assert "#788: no field of a finding can drive the terminal" "no_escape"
+rm -rf "$R"
+
 # The row's index addresses .findings, not the low findings alone: with a
 # blocker listed first, the issue must still carry the low finding's words.
 # Blockers are printed before any issue is filed.
@@ -2295,7 +2345,9 @@ assert "a completed closure leaves the location fileable again" "($GL GATE_ISSUE
 assert "a marker for another file never matches" "($GL GATE_ISSUE_INDEX=\$'$OPEN_REC'; [[ \"\$(gate_issue_lookup other.sh)\" == 'none' ]])"
 assert "an empty index files everything" "($GL GATE_ISSUE_INDEX=''; [[ \"\$(gate_issue_lookup f.sh)\" == 'none' ]])"
 assert "a just-filed location is remembered within the run" "($GL gate_issue_remember 5 f.sh; [[ \"\$(gate_issue_lookup f.sh)\" == 'open 5' ]])"
-assert "a path cannot terminate the marker comment early" "($GL [[ \"\$(gate_issue_marker 'a-->b')\" == '<!-- codex-gate-loc:o/r:ab -->' ]])"
+assert "a path cannot terminate the marker comment early" "($GL [[ \"\$(gate_issue_marker 'a-->b')\" == '<!-- codex-gate-loc:o/r:a--%3Eb -->' ]])"
+assert "a path cannot open a second marker, and two paths never share one" "($GL [[ \"\$(gate_issue_marker 'a<!--b%3C')\" == '<!-- codex-gate-loc:o/r:a%3C!--b%253C -->' ]])"
+assert "a control character in a path is written as data" "($GL [[ \"\$(gate_issue_marker \$'a\\tb')\" == '<!-- codex-gate-loc:o/r:a%09b -->' ]])"
 # jq @tsv doubles backslashes in the indexed body and read -r keeps them, so a
 # backslash path must be looked up in that escaped form (issue body as GitHub
 # returns it: `dir\name.sh`; as indexed: `dir\\name.sh`).
