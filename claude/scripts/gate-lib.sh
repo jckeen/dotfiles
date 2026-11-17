@@ -594,6 +594,71 @@ gate_issue_remember() {
   GATE_ISSUE_INDEX+=$'\n'"$1"$'\t'"open"$'\t'"$GATE_ISSUE_NO_REASON"$'\t'"$(gate_issue_index_marker "$2")"
 }
 
+# gate_split_text <file> <limit> <prefix> — write <file> as <prefix>1..N, each
+# at most <limit> characters, and print N. Parts end at line ends; only a line
+# longer than the limit is cut inside. Nothing is added or dropped: the parts
+# in order are the file.
+gate_split_text() {
+  python3 - "$1" "$2" "$3" <<'PYSPLIT'
+import sys
+
+path, limit, prefix = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+if limit < 1:
+    raise SystemExit("split limit must be positive")
+with open(path, encoding="utf-8", errors="surrogateescape", newline="") as stream:
+    text = stream.read()
+parts, current = [], ""
+for line in text.splitlines(keepends=True):
+    while len(line) > limit:
+        if current:
+            parts.append(current)
+            current = ""
+        parts.append(line[:limit])
+        line = line[limit:]
+    if len(current) + len(line) > limit:
+        parts.append(current)
+        current = ""
+    current += line
+if current:
+    parts.append(current)
+for number, part in enumerate(parts, 1):
+    with open(prefix + str(number), "w", encoding="utf-8", errors="surrogateescape", newline="") as stream:
+        stream.write(part)
+print(len(parts))
+PYSPLIT
+}
+
+# gate_issue_send <endpoint> <json> [<method>] — one REST write, the request
+# on stdin: a body passed as an argument fails outright past the kernel's cap
+# on a single argument. Returns 0 and sets GATE_SENT_URL (the html_url GitHub
+# answered with) on success. On failure GATE_SENT_LABEL_REJECTED is true only
+# for an HTTP 422 whose every error is a label validation error: the one
+# failure that proves nothing was created, so the one a caller may retry
+# without the label. Any other failure may follow a write that succeeded.
+gate_issue_send() {
+  local status=0 response answer
+  GATE_SENT_URL="" GATE_SENT_LABEL_REJECTED=false
+  response="$(gh api "$1" ${3:+--method "$3"} --input - --include <<<"$2" 2>/dev/null)" || status=$?
+  answer="$(sed '1,/^[[:space:]]*$/d' <<<"$response")"
+  if [[ "$status" -eq 0 ]]; then
+    GATE_SENT_URL="$(jq -er '.html_url | select(type == "string" and length > 0)' <<<"$answer" 2>/dev/null)" || GATE_SENT_URL=""
+    [[ -n "$GATE_SENT_URL" ]]
+    return
+  fi
+  if [[ "$response" =~ ^HTTP/[0-9.]+[[:space:]]422[[:space:]] ]] \
+    && jq -e '
+      (.errors | type == "array" and length > 0) and
+      all(.errors[];
+        ((.resource == "Issue" and .field == "labels") or
+         (.resource == "Label" and .field == "name")) and
+        (.code == "invalid" or .code == "missing" or .code == "missing_field"))
+    ' <<<"$answer" >/dev/null 2>&1; then
+    # shellcheck disable=SC2034  # Read by the sourcing gate.
+    GATE_SENT_LABEL_REJECTED=true
+  fi
+  return 1
+}
+
 # ─── .codex-review-ignore ──────────────────────────────────────
 # A per-repo list of path globs whose contents are hostile-by-design test data
 # (adversarial fixtures, prompt-injection samples). Matching changed paths stay

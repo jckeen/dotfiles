@@ -31,5 +31,25 @@
   failed, cancelled or superseded run through the one output validator.
 - **Blocking output** prints each finding's category, the rule that closes it
   and the other places it occurs. The gate had been discarding the first two.
+- **A finding is never shortened on its way out (#788).** The run output and
+  the low-finding issue feed print every field of a finding from the
+  reviewer's JSON: the category as written, both ends of each line range, the
+  confidence, the whole body and recommendation, and every supporting
+  location. A finding too long for one request is posted in parts, and a new
+  issue receives its location marker only after every part is up, so a
+  half-delivered finding is filed again by the next run instead of looking
+  tracked. Requests travel on stdin, the label-less retry happens only when
+  GitHub refuses the label, reviewer text cannot write a location marker, and
+  the closing line counts what was filed, added to an open issue, already
+  accepted, not delivered and not sent.
+- **The reviewer's output is kept (#788).** `review-receipt.py retain` copies
+  it, byte for byte, into the worktree's receipts directory as soon as it
+  exists, and the gate prints the path. A blocking, failed or cancelled
+  review used to leave its findings only in the terminal. The record is
+  evidence only and never decides a verdict.
+- **Not covered**: output the reviewer never finished writing, a killed
+  process or a full disk; the Antigravity gate; the rule that acceptance is
+  per file; the marker form for a path containing a backslash (#790); how
+  many comments repeated runs add to one open issue.
 - A receipt recorded before this change stays valid: `check` reads the stored
   review's digest, not its shape.

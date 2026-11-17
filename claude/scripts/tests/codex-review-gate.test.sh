@@ -169,26 +169,41 @@ if [ "$1" = api ]; then
       for a in "$@"; do [ "$prev" = "--jq" ] && filter="$a"; prev="$a"; done
       jq -r "$filter" "$CODEX_FAKE_DIR/issues.json" || exit 1
       exit 0 ;;
-    */comments)
-      for a in "$@"; do
-        case "$a" in
-          body=*) printf '%s\t%s\n' "$2" "${a#body=}" >> "$CODEX_FAKE_DIR/comments" ;;
-        esac
-      done
-      echo '{}'
-      exit 0 ;;
-    */issues)
+    */issues|*/issues/[0-9]*)
+      # Writes arrive as JSON on stdin (--input -) and are answered with the
+      # status line and headers (--include), as `gh api` does. Each write is
+      # numbered; touch $CODEX_FAKE_DIR/fail-write-N to refuse the Nth, or
+      # reject-label to answer a labelled create with GitHub's label 422.
+      request="$(cat)"
+      echo write >> "$CODEX_FAKE_DIR/write-count"
+      nth="$(wc -l < "$CODEX_FAKE_DIR/write-count" | tr -d ' ')"
+      if [ -f "$CODEX_FAKE_DIR/fail-write-$nth" ]; then
+        printf 'HTTP/2.0 502 Bad Gateway\r\n\r\n{"message":"bad gateway"}\n'
+        exit 1
+      fi
+      case "$2" in
+        */comments)
+          printf '%s\t%s\n' "$2" "$(jq -r .body <<<"$request")" >> "$CODEX_FAKE_DIR/comments"
+          jq -r .body <<<"$request" > "$CODEX_FAKE_DIR/comment-$nth"
+          printf 'HTTP/2.0 201 Created\r\n\r\n{"html_url":"https://github.com/acme/widgets/issues/777#issuecomment-1"}\n'
+          exit 0 ;;
+        */issues/[0-9]*)
+          # PATCH repos/{owner}/{repo}/issues/{n}: the body after every part.
+          printf '%s\n' "$*" >> "$CODEX_FAKE_DIR/patches"
+          jq -r .body <<<"$request" > "$CODEX_FAKE_DIR/patched-body"
+          printf 'HTTP/2.0 200 OK\r\n\r\n{"html_url":"https://github.com/acme/widgets/issues/777"}\n'
+          exit 0 ;;
+      esac
       # POST repos/{owner}/{repo}/issues — the REST create the gate uses.
-      printf '%s\n' "$*" >> "$CODEX_FAKE_DIR/creates"
-      # One line per creation: the argv record above spans lines, because the
-      # issue body does.
+      if [ -f "$CODEX_FAKE_DIR/reject-label" ] && jq -e 'has("labels")' <<<"$request" >/dev/null; then
+        printf 'HTTP/2.0 422 Unprocessable Entity\r\n\r\n{"message":"Validation Failed","errors":[{"resource":"Label","field":"name","code":"invalid"}]}\n'
+        exit 1
+      fi
+      printf '%s title=%s labels=%s\n' "$*" "$(jq -r .title <<<"$request")" "$(jq -c '.labels // []' <<<"$request")" >> "$CODEX_FAKE_DIR/creates"
+      # One line per creation: the body spans lines.
       echo create >> "$CODEX_FAKE_DIR/create-count"
-      for a in "$@"; do
-        case "$a" in
-          body=*) printf '%s\n' "${a#body=}" >> "$CODEX_FAKE_DIR/created-bodies" ;;
-        esac
-      done
-      echo "https://github.com/acme/widgets/issues/777"
+      jq -r .body <<<"$request" >> "$CODEX_FAKE_DIR/created-bodies"
+      printf 'HTTP/2.0 201 Created\r\n\r\n{"html_url":"https://github.com/acme/widgets/issues/777"}\n'
       exit 0 ;;
   esac
   exit 1
@@ -884,6 +899,143 @@ assert "the group carries one location marker per distinct file" "[ \"\$(grep -c
 assert "the lone finding keeps its own issue and title" "grep -qF 'title=codex review: a lone nit' '$CODEX_FAKE_DIR/creates'"
 assert "a grouped finding does not also comment on its own fresh issue" "[ ! -e '$CODEX_FAKE_DIR/comments' ]"
 rm -rf "$R"
+
+# ── a finding is never shortened on its way out (#788) ──────────────────
+# review_with <findings-json> — a needs-attention review with these findings.
+review_with() {
+  printf '{"verdict":"needs-attention","summary":"s","findings":%s,"next_steps":[],"coverage":{"status":"complete","examined":["code.txt"],"limitations":[]}}' \
+    "$1" > "$CODEX_FAKE_DIR/output"
+}
+feed_repo() {
+  new_repo
+  git -C "$R" remote add origin https://github.com/acme/widgets.git
+  echo "change" >> "$R/code.txt"
+}
+retained() { find "$R/.git/review-receipts/reviews" -name '*.json' 2>/dev/null; }
+# everything the fake GitHub received for an issue: bodies, comments, the patch
+posted() { cat "$CODEX_FAKE_DIR/created-bodies" "$CODEX_FAKE_DIR"/comment-[0-9]* "$CODEX_FAKE_DIR/patched-body" 2>/dev/null; }
+
+# A finding at the schema's limits: forty places, each path and note at its
+# maximum length. It does not fit one request, so it goes up in parts.
+long_note="$(printf 'n%.0s' $(seq 1 600))"
+long_dir="$(printf 'd%.0s' $(seq 1 380))"
+forty="$(jq -cn --arg note "$long_note" --arg dir "$long_dir" '[range(40) | {file:"\($dir)/place\(.).txt", line_start:(.+1), line_end:(.+3), note:$note}]')"
+BIG_FINDING="$(jq -cn --argjson places "$forty" '[{severity:"low",category:"Kind Of Nit",title:"a nit with many places",file:"code.txt",line_start:3,line_end:5,confidence:0.4,body:"first line\nsecond \\ line",recommendation:"tidy every place",supporting_locations:$places}]')"
+
+feed_repo
+review_with "$BIG_FINDING"
+check "#788: a finding too long for one request is filed in parts" 0 "✓ filed:" --uncommitted
+assert "#788: every one of the forty places is posted" "[ \"\$(posted | grep -o 'place[0-9]*\\.txt:[0-9]*-[0-9]*' | sort -u | wc -l | tr -d ' ')\" -eq 40 ]"
+assert "#788: every note is posted whole" "[ \"\$(cat '$CODEX_FAKE_DIR/created-bodies' '$CODEX_FAKE_DIR'/comment-[0-9]* | grep -o '$long_note' | wc -l | tr -d ' ')\" -eq 40 ]"
+assert "#788: the primary range, category as written and confidence are posted" "grep -qF 'code.txt:3-5' '$CODEX_FAKE_DIR/created-bodies' && grep -qF 'Kind Of Nit' '$CODEX_FAKE_DIR/created-bodies' && grep -qF '**Confidence:** 0.4' '$CODEX_FAKE_DIR/created-bodies'"
+assert "#788: a newline in the body arrives as a newline, a backslash as a backslash" "grep -qxF 'first line' '$CODEX_FAKE_DIR/created-bodies' && grep -qxF 'second \\ line' '$CODEX_FAKE_DIR/created-bodies'"
+assert "#788: the location marker is written only once every part is up" "! grep -qF 'codex-gate-loc' '$CODEX_FAKE_DIR/created-bodies' && grep -qF '<!-- codex-gate-loc:acme/widgets:code.txt -->' '$CODEX_FAKE_DIR/patched-body'"
+assert "#788: no request is over the part size" "[ \"\$(for f in '$CODEX_FAKE_DIR/created-bodies' '$CODEX_FAKE_DIR'/comment-[0-9]* '$CODEX_FAKE_DIR/patched-body'; do wc -m < \"\$f\"; done | sort -n | tail -1)\" -le 30000 ]"
+assert "#788: the run output prints every place too" "[ \"\$(grep -c 'also: .*place[0-9]*\\.txt' <<<\"\$CHECK_OUTPUT\")\" -eq 40 ]"
+assert "#788: the closing line says what was delivered" "grep -qF '1 filed, 0 added to an open issue, 0 already accepted, 0 not delivered, 0 not sent' <<<\"\$CHECK_OUTPUT\""
+assert "#788: the review output is kept, byte for byte" "[ -n \"\$(retained)\" ] && cmp -s \"\$(retained)\" '$CODEX_FAKE_DIR/output'"
+rm -rf "$R"
+
+# A part that fails leaves the issue without its marker, so it is not read as
+# tracking the location, and the run says the finding was not delivered.
+feed_repo
+review_with "$BIG_FINDING"
+: > "$CODEX_FAKE_DIR/fail-write-2"
+check "#788: a failed part is reported, not passed off as filed" 0 "only 1 of 2 part(s) were posted" --uncommitted
+assert "#788: the half-delivered issue never gets its location marker" "[ ! -e '$CODEX_FAKE_DIR/patched-body' ] && ! grep -qF 'codex-gate-loc' '$CODEX_FAKE_DIR/created-bodies'"
+assert "#788: the closing line counts it as not delivered" "grep -qF '0 filed, 0 added to an open issue, 0 already accepted, 1 not delivered' <<<\"\$CHECK_OUTPUT\""
+assert "#788: the run names where the whole finding is kept" "grep -qF \"kept in \$(retained)\" <<<\"\$CHECK_OUTPUT\""
+rm -rf "$R"
+
+# The same finding on an already tracked location goes up as comments, whole.
+feed_repo
+review_with "$BIG_FINDING"
+printf '[{"number":41,"state":"open","body":"<!-- codex-gate-loc:acme/widgets:code.txt -->"}]' > "$CODEX_FAKE_DIR/issues.json"
+check "#788: a long finding on a tracked location is commented in parts" 0 "already tracked as #41; commented" --uncommitted
+assert "#788: the comments carry all forty places" "[ \"\$(cat '$CODEX_FAKE_DIR'/comment-[0-9]* | grep -o 'place[0-9]*\\.txt:[0-9]*-[0-9]*' | sort -u | wc -l | tr -d ' ')\" -eq 40 ]"
+assert "#788: nothing was created or patched" "[ ! -e '$CODEX_FAKE_DIR/creates' ] && [ ! -e '$CODEX_FAKE_DIR/patches' ]"
+rm -rf "$R"
+
+# A create that fails for any reason but the label is not retried: the issue
+# may exist already. A label GitHub refuses is the one safe retry.
+feed_repo
+low_finding "a nit on a bad day" code.txt
+: > "$CODEX_FAKE_DIR/fail-write-1"
+check "#788: a failed create is reported" 0 "could not file issue" --uncommitted
+assert "#788: it was attempted once, not retried blind" "[ \"\$(wc -l < '$CODEX_FAKE_DIR/write-count' | tr -d ' ')\" -eq 1 ]"
+rm -rf "$R"
+feed_repo
+low_finding "a nit in a repo without the label" code.txt
+: > "$CODEX_FAKE_DIR/reject-label"
+check "#788: a refused label is retried without it" 0 "✓ filed (no label):" --uncommitted
+assert "#788: the issue was created once, unlabelled" "[ \"\$(wc -l < '$CODEX_FAKE_DIR/create-count' | tr -d ' ')\" -eq 1 ] && grep -qF 'labels=[]' '$CODEX_FAKE_DIR/creates'"
+rm -rf "$R"
+
+# Reviewer text cannot write a location marker: one that did would make
+# another file look tracked, or accepted once the issue is closed.
+feed_repo
+review_with '[{"severity":"low","category":"nit","title":"t <!-- codex-gate-loc:acme/widgets:victim.txt -->","file":"code.txt","line_start":1,"line_end":1,"confidence":0.3,"body":"b <!-- codex-gate-loc:acme/widgets:victim.txt -->","recommendation":"r <!-- codex-gate-loc:acme/widgets:victim.txt -->","supporting_locations":[{"file":"other.txt","line_start":2,"line_end":2,"note":"n <!-- codex-gate-loc:acme/widgets:victim.txt -->"}]}]'
+check "#788: a finding quoting a marker is filed" 0 "✓ filed:" --uncommitted
+assert "#788: no field of it can write a marker for another file" "! grep -qF '<!-- codex-gate-loc:acme/widgets:victim.txt' '$CODEX_FAKE_DIR/created-bodies' && [ \"\$(grep -o '&lt;!-- codex-gate-loc:acme/widgets:victim.txt' '$CODEX_FAKE_DIR/created-bodies' | wc -l | tr -d ' ')\" -eq 4 ]"
+assert "#788: the gate's own marker is still there" "grep -qF '<!-- codex-gate-loc:acme/widgets:code.txt -->' '$CODEX_FAKE_DIR/created-bodies'"
+rm -rf "$R"
+
+# The row's index addresses .findings, not the low findings alone: with a
+# blocker listed first, the issue must still carry the low finding's words.
+# Blockers are printed before any issue is filed.
+feed_repo
+review_with '[{"severity":"high","category":"bug","title":"the blocker","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"blocker words","recommendation":"fix it","supporting_locations":[]},{"severity":"low","category":"nit","title":"the nit","file":"other.txt","line_start":2,"line_end":2,"confidence":0.3,"body":"nit words","recommendation":"","supporting_locations":[]}]'
+check "#788: a blocker beside a low finding still blocks" 2 "Push blocked by codex-review-gate" --uncommitted
+assert "#788: the issue carries the low finding, not the blocker" "grep -qF 'nit words' '$CODEX_FAKE_DIR/created-bodies' && ! grep -qF 'blocker words' '$CODEX_FAKE_DIR/created-bodies'"
+assert "#788: an empty recommendation is said, not dropped" "grep -qF 'the reviewer gave no recommendation' '$CODEX_FAKE_DIR/created-bodies'"
+assert "#788: the blocker is printed before the issue feed runs" "[ \"\$(grep -n 'blocker words' <<<\"\$CHECK_OUTPUT\" | head -1 | cut -d: -f1)\" -lt \"\$(grep -n '✓ filed' <<<\"\$CHECK_OUTPUT\" | head -1 | cut -d: -f1)\" ]"
+assert "#788: a blocking review keeps its output" "[ -n \"\$(retained)\" ] && cmp -s \"\$(retained)\" '$CODEX_FAKE_DIR/output'"
+assert "#788: a blocking review still leaves no receipt" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+rm -rf "$R"
+
+# A reviewer that fails after writing findings is still not trusted, and its
+# output is still kept.
+feed_repo
+review_with '[{"severity":"high","category":"bug","title":"the blocker","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"blocker words","recommendation":"fix it","supporting_locations":[]}]'
+echo 1 > "$CODEX_FAKE_DIR/rc"
+check "#788: a failed reviewer with blocking output still exits 2" 2 "not trusting the result" --uncommitted --no-issues
+assert "#788: its output is kept" "[ -n \"\$(retained)\" ] && cmp -s \"\$(retained)\" '$CODEX_FAKE_DIR/output'"
+rm -rf "$R"
+
+# A group keeps every member whole: bodies past the old 600-character cut and
+# every place of each.
+long_body="$(printf 'x%.0s' $(seq 1 700))"
+many_places="$(jq -cn '[range(12) | {file:"place\(.).txt", line_start:(.+1), line_end:(.+1), note:"n\(.)"}]')"
+feed_repo
+review_with "$(jq -cn --arg body "$long_body" --argjson places "$many_places" '[{severity:"low",category:"same-kind",title:"first",file:"a.md",line_start:3,line_end:3,confidence:0.3,body:$body,recommendation:"fix",supporting_locations:[{file:"other.txt",line_start:7,line_end:7,note:"same nit"}]},{severity:"low",category:"same-kind",title:"second",file:"b.md",line_start:5,line_end:5,confidence:0.3,body:$body,recommendation:"fix",supporting_locations:$places}]')"
+check "#788: two long findings of one kind file one grouped issue" 0 "Codex review passed" --uncommitted
+assert "#788: they were grouped" "grep -qF 'title=codex review: same-kind (2 files)' '$CODEX_FAKE_DIR/creates'"
+assert "#788: each body is whole" "[ \"\$(grep -o '$long_body' '$CODEX_FAKE_DIR/created-bodies' | wc -l | tr -d ' ')\" -eq 2 ]"
+assert "#788: every place of every member is listed" "grep -qF 'other.txt:7' '$CODEX_FAKE_DIR/created-bodies' && [ \"\$(grep -o 'place[0-9]*\\.txt:[0-9]*' '$CODEX_FAKE_DIR/created-bodies' | sort -u | wc -l | tr -d ' ')\" -eq 12 ]"
+assert "#788: the group still carries a marker per file" "[ \"\$(grep -c 'codex-gate-loc:acme/widgets:[ab].md -->' '$CODEX_FAKE_DIR/created-bodies')\" -eq 2 ]"
+assert "#788: both members count as filed" "grep -qF '2 filed' <<<\"\$CHECK_OUTPUT\""
+rm -rf "$R"
+
+# Routes that post nothing say so, and the findings are still printed whole.
+feed_repo
+low_finding "a nit kept local" code.txt
+check "#788: with filing off the closing line says nothing was sent" 0 "0 filed, 0 added to an open issue, 0 already accepted, 0 not delivered, 1 not sent" --uncommitted --no-issues
+assert "#788: the finding is printed whole all the same" "grep -qF 'minor detail' <<<\"\$CHECK_OUTPUT\" && grep -qF 'to close it: tidy it' <<<\"\$CHECK_OUTPUT\" && grep -qF 'also: other.txt:7 — same nit' <<<\"\$CHECK_OUTPUT\""
+rm -rf "$R"
+feed_repo
+low_finding "a nit in a dry run" code.txt
+check "#788: a dry run counts its finding as not sent" 0 "1 not sent" --uncommitted --dry-run
+assert "#788: a dry run writes nothing" "[ ! -e '$CODEX_FAKE_DIR/write-count' ]"
+rm -rf "$R"
+
+# The splitter adds and drops nothing: the parts, in order, are the text.
+split_dir="$(mktemp -d)"
+printf 'short\r\n\n%s\nünïcödé line\n\n\nlast without newline' "$(printf 'L%.0s' $(seq 1 130))" > "$split_dir/text"
+split_count="$(. "$SCRIPT_DIR/../gate-lib.sh" && gate_split_text "$split_dir/text" 50 "$split_dir/part")"
+assert "#788: a line over the limit is cut into several parts" "[ \"$split_count\" -ge 4 ]"
+assert "#788: the parts in order are the original text" "cat \$(for i in \$(seq 1 $split_count); do printf '%s ' '$split_dir'/part\$i; done) | cmp -s - '$split_dir/text'"
+assert "#788: no part is over the limit" "[ \"\$(for i in \$(seq 1 $split_count); do wc -m < '$split_dir'/part\$i; done | sort -n | tail -1)\" -le 50 ]"
+rm -rf "$split_dir"
 
 # A later run touching one file of a group comments on the grouped issue, and
 # a group closed as not planned suppresses every file it lists.
@@ -2654,7 +2806,7 @@ assert "#787: the complete review leaves a receipt" "codex_receipt"
 coverage_output needs-attention '[{"severity":"high","title":"exit skips the guard","file":"code.txt","line_start":1,"line_end":1,"confidence":0.9,"body":"broken","category":"missing-exit-guard","recommendation":"route every exit through one guard","supporting_locations":[{"file":"other.txt","line_start":7,"line_end":9,"note":"same exit"}]}]' complete '["code.txt"]' '[]'
 check "#787: a blocker prints its category" 2 "category: missing-exit-guard" --committed --require --no-issues
 assert "#787: a blocker prints the rule that closes it" "grep -qF 'to close it: route every exit through one guard' <<<\"\$CHECK_OUTPUT\""
-assert "#787: a blocker prints the other places it occurs" "grep -qF 'also: other.txt:7 — same exit' <<<\"\$CHECK_OUTPUT\""
+assert "#787: a blocker prints the other places it occurs" "grep -qF 'also: other.txt:7-9 — same exit' <<<\"\$CHECK_OUTPUT\""
 # The reviewer is told every limit its output is held to, so a sound review is
 # not rejected for a rule it could not have known.
 assert "#787: the request states the path rule supporting locations are held to" "grep -qF 'relative to the repository root' '$CODEX_FAKE_DIR/stdin' && grep -qF 'line_end is not less than line_start' '$CODEX_FAKE_DIR/stdin'"

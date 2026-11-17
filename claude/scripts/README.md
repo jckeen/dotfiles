@@ -364,6 +364,15 @@ takes the lock only for its deciding assertion — the attempt still live and th
 receipt still the one it validated — so a claim landing after its validation
 makes it refuse instead of approving a retired receipt (#533).
 
+**The reviewer's output outlives the run (#788).** The Codex gate deletes its
+working files on every exit and only an approval stores the output in a
+receipt, so `retain` copies the output, byte for byte, to
+`<git-dir>/review-receipts/reviews/<artifact>.<lane>.<digest>.json` as soon as
+it exists: before the claim, the schema check and every abort path. The gate
+prints the path. The newest records are kept and older ones pruned
+(`RETAINED_REVIEWS` in `review-receipt.py`). A record is evidence only:
+nothing reads it to reach a verdict, clear a marker or accept a receipt.
+
 **A blocking verdict is a durable marker, not only a token race (#573).** Every
 blocking exit of both gates first runs `block`, which writes
 `<git-dir>/review-receipts/blocks/<artifact>.json` keyed by base, head, scope

@@ -25,6 +25,11 @@
 #          closed as "not planned" means the finding was accepted, so nothing
 #          is filed. New findings that share a category across two or more
 #          files become ONE issue listing every location (#761). Then exit 0.
+#          A finding is posted whole, in as many parts as it needs, or is
+#          reported as not delivered: it is never shortened (#788).
+#        - the reviewer's output is kept under <git-dir>/review-receipts/
+#          reviews/ on every exit that follows the review, so a blocking,
+#          failed or cancelled run still leaves its findings (#788).
 #        - a review whose coverage is not "complete" → BLOCK (fail closed),
 #          whatever its verdict or findings (#787).
 #        - verdict "approve" with no blocking findings → exit 0.
@@ -210,6 +215,70 @@ output_may_block() {
   [[ -n "${OUT_FILE:-}" && -s "$OUT_FILE" ]] || return 1
   ! review_output_check clean "$OUT_FILE"
 }
+# retain_review — keep the reviewer's output past this run (#788). Cleanup
+# deletes the gate's working files on every exit and only an approval stores
+# the output in a receipt, so without this a blocking, failed or cancelled
+# review leaves its findings nowhere but the terminal. Called wherever output
+# may first exist: after the reviewer returns, and on the abort and degraded
+# exits that can precede that point. Once per run. When the record cannot be
+# written the output file itself is left in place and named.
+RETAINED_REVIEW="" KEEP_OUTPUT=false
+retain_review() {
+  [[ -z "$RETAINED_REVIEW" && "$KEEP_OUTPUT" != true ]] || return 0
+  [[ -n "${OUT_FILE:-}" && -s "$OUT_FILE" && -n "${GATE_RUN_DIR:-}" && -f "$GATE_RUN_DIR/snapshot.json" ]] || return 0
+  if RETAINED_REVIEW="$(python3 "$RECEIPT_HELPER" retain --snapshot "$GATE_RUN_DIR/snapshot.json" --output "$OUT_FILE" 2>/dev/null)" \
+    && [[ -n "$RETAINED_REVIEW" ]]; then
+    echo "  Full review output kept at: $RETAINED_REVIEW"
+  else
+    RETAINED_REVIEW="" KEEP_OUTPUT=true
+    echo "  ⚠ could not retain the review output; leaving it at: $OUT_FILE"
+  fi
+}
+# How a finding is written out (#788). Every field the schema validates is
+# printed, none shortened; the retained output holds the original bytes.
+#   shown       control characters other than newline and tab become U+FFFD,
+#               so reviewer text cannot drive the terminal
+#   for_terminal  one finding for the run output
+#   for_issue, for_issue_item  one finding as Markdown, alone or as a list item
+#   quoted      shown, with HTML comment delimiters escaped: reviewer text in
+#               an issue body must not be able to write a location marker
+FINDING_JQ='
+def shown: gsub("[^\\P{Cc}\\n\\t]"; "�");
+def hang($pad): gsub("\n"; "\n" + $pad);
+def span: "\(.file | shown | gsub("\n"; " ")):\(.line_start)"
+  + (if .line_end != .line_start then "-\(.line_end)" else "" end);
+def for_terminal:
+  "  [\(.severity)] \(.title | shown | hang("    ")) — \(span)\n"
+  + "    category: \(.category | shown | hang("      "))\n"
+  + "    confidence: \(.confidence)\n"
+  + "    \(.body | shown | hang("    "))\n"
+  + "    to close it: \(if .recommendation == "" then "(the reviewer gave no recommendation)" else (.recommendation | shown | hang("      ")) end)"
+  + (.supporting_locations
+     | map("\n    also: \(span)" + (if .note != "" then " — \(.note | shown | hang("      "))" else "" end))
+     | join(""));
+def quoted: shown | gsub("<!--"; "&lt;!--") | gsub("-->"; "--&gt;");
+def places($pad):
+  if (.supporting_locations | length) == 0 then ""
+  else "\n" + $pad + "**Also at:**\n"
+    + (.supporting_locations
+       | map($pad + "- `\(span | quoted)`" + (if .note != "" then " — \(.note | quoted | hang($pad + "  "))" else "" end))
+       | join("\n")) + "\n"
+  end;
+def advice: if .recommendation == "" then "(the reviewer gave no recommendation)" else (.recommendation | quoted) end;
+def for_issue:
+  "\n**Finding:** \(.title | quoted)\n"
+  + "**Location:** `\(span | quoted)`\n"
+  + "**Category:** \(.category | quoted) · **Confidence:** \(.confidence)\n\n"
+  + (.body | quoted) + "\n"
+  + places("")
+  + "\n**Recommendation:** \(advice)";
+def for_issue_item:
+  "- [ ] `\(span | quoted)` — \(.title | quoted | hang("  "))\n"
+  + "  **Category:** \(.category | quoted | hang("  ")) · **Confidence:** \(.confidence)\n"
+  + "  \(.body | quoted | hang("  "))\n"
+  + (places("  ") | if . == "" then "" else .[1:] end)
+  + "  **Recommendation:** \(advice | hang("  "))";
+'
 # abort_review <headline> — end an attempt that reached no verdict of its own:
 # a cancellation (cancel_review), or an exit the gate did not choose
 # (finish_review).
@@ -217,6 +286,7 @@ abort_review() {
   # Repeated signals must not interrupt receipt invalidation or cleanup. The
   # existing receipt API invalidates the whole lane.
   trap '' INT TERM HUP QUIT TSTP
+  retain_review
   # The status chosen below is deliberate, including a 2: finish_review must
   # not read it as an exit the gate did not choose.
   GATE_EXIT_DECIDED=1
@@ -277,6 +347,8 @@ finish_review() {
       *) abort_review "✖ Codex gate stopped without reaching a verdict (interrupted, or a command failed); no approval from this attempt may be used." ;;
     esac
   fi
+  # No exit that follows a review leaves without its output kept (#788).
+  retain_review || true
   if declare -F gate_cleanup >/dev/null; then
     gate_cleanup || true
   fi
@@ -341,6 +413,7 @@ fi
 # the Antigravity gate's degrade() does the same via verdict_in_partial_output.
 # The static test in codex-review-gate.test.sh holds every post-review exit to it.
 verdict_in_output() {
+  retain_review
   output_may_block || return 0
   [[ -n "${GATE_RUN_DIR:-}" ]] || return 0
   gate_block
@@ -371,7 +444,7 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git
 # exemption paths. Keep owned review files in that same cleanup contract.
 gate_cleanup() {
   [[ -z "${REQUEST_FILE:-}" ]] || rm -f -- "$REQUEST_FILE"
-  [[ -z "${OUT_FILE:-}" ]] || rm -f "$OUT_FILE"
+  [[ -z "${OUT_FILE:-}" || "${KEEP_OUTPUT:-false}" == true ]] || rm -f "$OUT_FILE"
   if [[ -n "${ERR_FILE:-}" && "${KEEP_DIAGNOSTIC:-false}" != true ]]; then
     rm -f "$ERR_FILE"
   fi
@@ -835,6 +908,7 @@ else
   CODEX_RC=$?
 fi
 set -e
+retain_review
 
 if [[ "$CODEX_RC" -ne 0 ]]; then
   report_diagnostic
@@ -903,21 +977,107 @@ echo "  Verdict: $VERDICT"
 echo "  Findings: $N_TOTAL total — $N_BLOCK blocking (critical/high/medium), $N_LOW low"
 echo ""
 
-# ─── low findings → GitHub issues (don't let them fall through) ─
+# ─── Every finding, in full, before anything below can fail (#788) ─
+# Printed ahead of the issue feed, so a failed network call cannot hide a
+# blocker, and from the reviewer's JSON itself: no field is shortened here.
+if [[ "$N_BLOCK" -gt 0 ]]; then
+  red "✖ BLOCKING findings (critical/high/medium) — do not push until addressed:"
+  echo ""
+  jq -r "$FINDING_JQ"'.findings[] | select(.severity != "low") | for_terminal' "$OUT_FILE"
+  echo ""
+fi
 if [[ "$N_LOW" -gt 0 ]]; then
   yellow "Low findings:"
-  jq -r '.findings[] | select(.severity == "low") | "  [\(.severity)] \(.title) — \(.file):\(.line_start)"' "$OUT_FILE"
+  jq -r "$FINDING_JQ"'.findings[] | select(.severity == "low") | for_terminal' "$OUT_FILE"
   echo ""
-  if [[ "$FILE_ISSUES" == "true" ]] && ! command -v gh >/dev/null 2>&1; then
+fi
+
+# ─── low findings → GitHub issues (don't let them fall through) ─
+# What a post may not do is shorten a finding (#788). A finding goes up whole,
+# in as many parts as it needs, or it is reported as not delivered; it is
+# printed above and kept in the retained output either way.
+# 30000 characters a part: GitHub refuses a body over 65536, and this stays
+# under it even if every character counts twice there.
+ISSUE_PART_CHARS=30000
+ISSUE_MAX_PARTS=8
+n_filed=0 n_commented=0 n_accepted=0 n_undelivered=0 n_unpublished=0
+
+# finding_heading <index> — the finding's title as one bounded line, for an
+# issue title or a log line. The whole title is in the rendered finding.
+finding_heading() {
+  jq -r --argjson i "$1" '.findings[$i].title | gsub("\\p{Cc}"; " ") | .[0:200]' "$OUT_FILE"
+}
+
+# publish_finding create|comment <issue-number> <title> <text-file> <footer-file>
+# Posts <text-file> whole. One part is one request, with the footer (the
+# accept instruction and the location markers) at its end. More parts are an
+# issue or comment followed by comments, and a new issue gets its footer only
+# once every part is up: the markers are what make a later run treat the
+# location as tracked, and a half-delivered finding must not look tracked.
+# Returns 0 delivered, 1 nothing posted, 2 partly posted, 3 too large to post.
+# Sets PUBLISHED_URL, PUBLISHED_LABELLED, PUBLISHED_PARTS and PUBLISHED_OF.
+publish_finding() {
+  local kind="$1" number="$2" title="$3" text="$4" footer="$5"
+  local work budget count payload part body i
+  PUBLISHED_URL="" PUBLISHED_LABELLED=true PUBLISHED_PARTS=0 PUBLISHED_OF=0
+  work="$(mktemp -d "$GATE_RUN_DIR/publish.XXXXXX")" || return 1
+  budget=$((ISSUE_PART_CHARS - $(wc -m <"$footer") - 200))
+  [[ "$budget" -ge 1000 ]] || return 3
+  count="$(gate_split_text "$text" "$budget" "$work/part")" || return 1
+  [[ "$count" -ge 1 && "$count" -le "$ISSUE_MAX_PARTS" ]] || return 3
+  PUBLISHED_OF="$count"
+  for ((i = 1; i <= count; i++)); do
+    part="$work/part$i" body="$work/body$i"
+    if [[ "$count" -eq 1 ]]; then
+      cat "$part" "$footer" >"$body" || return 1
+    elif [[ "$i" -eq 1 ]]; then
+      { cat "$part"; printf '\n\n_Part 1 of %s; the rest follows in the comments._\n' "$count"; } >"$body" || return 1
+    else
+      { printf '_Part %s of %s._\n\n' "$i" "$count"; cat "$part"; } >"$body" || return 1
+    fi
+    if [[ "$kind" == create && "$i" -eq 1 ]]; then
+      payload="$(jq -nc --rawfile body "$body" --arg title "$title" '{title: $title, body: $body, labels: ["codex-review"]}')" || return 1
+      if ! gate_issue_send "repos/$GATE_ISSUE_REPO/issues" "$payload"; then
+        # Retried without the label only when GitHub said the label was the
+        # problem. After any other failure the issue may already exist.
+        [[ "$GATE_SENT_LABEL_REJECTED" == true ]] || return 1
+        payload="$(jq -c 'del(.labels)' <<<"$payload")" || return 1
+        gate_issue_send "repos/$GATE_ISSUE_REPO/issues" "$payload" || return 1
+        PUBLISHED_LABELLED=false
+      fi
+      PUBLISHED_URL="$GATE_SENT_URL"
+      number="${GATE_SENT_URL##*/}"
+      [[ "$number" =~ ^[0-9]+$ ]] || return 2
+    else
+      payload="$(jq -nc --rawfile body "$body" '{body: $body}')" || { [[ "$i" -eq 1 ]] && return 1; return 2; }
+      gate_issue_send "repos/$GATE_ISSUE_REPO/issues/${number}/comments" "$payload" || { [[ "$i" -eq 1 ]] && return 1; return 2; }
+    fi
+    PUBLISHED_PARTS="$i"
+  done
+  if [[ "$kind" == create && "$count" -gt 1 ]]; then
+    cat "$work/body1" "$footer" >"$work/final" || return 2
+    payload="$(jq -nc --rawfile body "$work/final" '{body: $body}')" || return 2
+    gate_issue_send "repos/$GATE_ISSUE_REPO/issues/${number}" "$payload" PATCH || return 2
+  fi
+  return 0
+}
+
+if [[ "$N_LOW" -gt 0 ]]; then
+  if [[ "$FILE_ISSUES" != "true" ]]; then
+    n_unpublished="$N_LOW"
+  elif ! command -v gh >/dev/null 2>&1; then
     yellow "  (gh CLI not found — not filing issues; address the above manually)"
-  elif [[ "$FILE_ISSUES" == "true" ]] && ! gate_issue_prefetch ""; then
+    n_unpublished="$N_LOW"
+  elif ! gate_issue_prefetch ""; then
     # Without the index every finding would be a duplicate candidate; filing
     # blind is the noise this dedup exists to stop.
     yellow "  ⚠ could not load existing issues for dedup (repo slug or REST fetch unavailable) — not filing; address the above manually"
-  elif [[ "$FILE_ISSUES" == "true" ]]; then
+    n_unpublished="$N_LOW"
+  else
     branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
     short_sha="$(git rev-parse --short HEAD 2>/dev/null || echo "?")"
-    filed=0
+    filed=0 handled=0
+    text_file="$GATE_RUN_DIR/publish-text" footer_file="$GATE_RUN_DIR/publish-footer"
     # One finding class across many files used to become one issue per file:
     # eleven near-identical issues from a single review (#761). The reviewer
     # names each finding's category, and NEW findings that share one across two
@@ -926,14 +1086,21 @@ if [[ "$N_LOW" -gt 0 ]]; then
     # working for every file in it. A category is reviewer text: it is reduced
     # to a slug in jq before it reaches a title, and it only ever groups.
     # Indexed arrays and linear scans, not associative arrays: bash 3.2.
-    low_rows="$(jq -r '.findings[] | select(.severity == "low")
-      | [(.category | ascii_downcase | gsub("[^a-z0-9]+"; "-") | sub("^-"; "") | .[0:40] | sub("-$"; "")
+    # A row is what grouping and dedup need and nothing else: the finding's
+    # index in .findings (counted before the severity filter, so it addresses
+    # the same finding in every later jq call), the category slug, the file
+    # and the line. The words of a finding never pass through a row, where
+    # @tsv would turn a newline into a backslash and an n. No column is ever
+    # empty, because read collapses adjacent tabs.
+    low_rows="$(jq -r '.findings | to_entries[] | select(.value.severity == "low")
+      | [(.key | tostring),
+         (.value.category | ascii_downcase | gsub("[^a-z0-9]+"; "-") | sub("^-"; "") | .[0:40] | sub("-$"; "")
           | if . == "" then "uncategorized" else . end),
-         .title, .file, (.line_start|tostring), .body, (if .recommendation == "" then "n/a" else .recommendation end)] | @tsv' "$OUT_FILE")"
+         .value.file, (.value.line_start | tostring)] | @tsv' "$OUT_FILE")"
     # Pass 1: which categories have new findings in two or more distinct files.
     new_cats=() new_files=() group_cats=() done_pairs=()
-    while IFS=$'\t' read -r category title file line_start body recommendation; do
-      [[ -z "$title" ]] && continue
+    while IFS=$'\t' read -r index category file _; do
+      [[ -z "$index" ]] && continue
       read -r match number <<<"$(gate_issue_lookup "$file")"
       [[ "$match" == "none" ]] || continue
       seen=false
@@ -946,8 +1113,8 @@ if [[ "$N_LOW" -gt 0 ]]; then
       done
       [[ "$seen" == true ]] || { new_cats+=("$category"); new_files+=("$file"); }
     done <<<"$low_rows"
-    while IFS=$'\t' read -r category title file line_start body recommendation; do
-      [[ -z "$title" ]] && continue
+    while IFS=$'\t' read -r index category file _; do
+      [[ -z "$index" ]] && continue
       # A finding already filed with its group in this run needs nothing more:
       # without this it would comment "seen again" on the issue that lists it.
       skip=false
@@ -955,85 +1122,81 @@ if [[ "$N_LOW" -gt 0 ]]; then
         [[ "$pair" == "$category"$'\t'"$file" ]] && skip=true
       done
       [[ "$skip" == true ]] && continue
-      [[ "$filed" -ge "$MAX_ISSUES" ]] && { yellow "  (reached MAX_ISSUES=$MAX_ISSUES; remaining not filed)"; break; }
+      if [[ "$filed" -ge "$MAX_ISSUES" ]]; then
+        yellow "  (reached MAX_ISSUES=$MAX_ISSUES; remaining not filed)"
+        break
+      fi
+      title="$(finding_heading "$index")"
       issue_title="codex review: ${title}"
       # Dedupe by LOCATION (file), not title — Codex rewords titles every run.
       # gate_issue_lookup reads the index prefetched above; see gate-lib.sh.
       read -r match number <<<"$(gate_issue_lookup "$file")"
       case "$match" in
         open)
-          # The location is shared, the defect may not be: keep the line, the
-          # explanation and the recommendation so the comment stays actionable
-          # on its own, not just a title.
+          # The location is shared, the defect may not be: the comment is the
+          # whole finding, so it stays actionable on its own.
           comment_head="seen again on ${branch} @ ${short_sha}: ${title}"
-          comment="${comment_head}
-
-**Location:** \`${file}:${line_start}\`
-
-${body}
-
-**Recommendation:** ${recommendation}"
+          handled=$((handled + 1))
           if [[ "$DRY_RUN" == "true" ]]; then
             echo "  [dry-run] would comment on #${number}: $comment_head"
-          elif gh api "repos/$GATE_ISSUE_REPO/issues/${number}/comments" -f body="$comment" >/dev/null 2>&1; then
-            echo "  ↷ already tracked as #${number}; commented: $comment_head"
+            n_unpublished=$((n_unpublished + 1))
           else
-            yellow "  ⚠ already tracked as #${number} but could not comment: $issue_title"
+            { printf '%s\n\n' "$comment_head"
+              jq -r --argjson i "$index" "$FINDING_JQ"'.findings[$i] | for_issue' "$OUT_FILE"; } >"$text_file"
+            : >"$footer_file"
+            rc=0; publish_finding comment "$number" "" "$text_file" "$footer_file" || rc=$?
+            if [[ "$rc" -eq 0 ]]; then
+              echo "  ↷ already tracked as #${number}; commented: $comment_head"
+              n_commented=$((n_commented + 1))
+            else
+              yellow "  ⚠ already tracked as #${number} but could not comment (${PUBLISHED_PARTS} of ${PUBLISHED_OF} part(s) posted): $issue_title"
+              n_undelivered=$((n_undelivered + 1))
+            fi
           fi
           filed=$((filed+1))
           continue
           ;;
         accepted)
           echo "  ∅ accepted (#${number}), skipping: $issue_title"
+          handled=$((handled + 1)) n_accepted=$((n_accepted + 1))
           continue
           ;;
       esac
       grouped=false
       for g in ${group_cats[@]+"${group_cats[@]}"}; do [[ "$g" == "$category" ]] && grouped=true; done
       group_files=()
+      n_items=1
       if [[ "$grouped" == true ]]; then
         # Every new finding of this category goes into one issue, in the
         # reviewer's order; each distinct file gets its own marker.
-        items="" markers="" n_items=0
-        while IFS=$'\t' read -r g_cat g_title g_file g_line g_body g_rec; do
-          [[ "$g_cat" == "$category" && -n "$g_title" ]] || continue
+        markers="" n_items=0
+        : >"$text_file.items"
+        while IFS=$'\t' read -r g_index g_cat g_file _; do
+          [[ "$g_cat" == "$category" && -n "$g_index" ]] || continue
           read -r g_match _ <<<"$(gate_issue_lookup "$g_file")"
           [[ "$g_match" == "none" ]] || continue
           n_items=$((n_items + 1))
-          items+="- [ ] \`${g_file}:${g_line}\` — ${g_title}
-  ${g_body:0:600}
-  **Recommendation:** ${g_rec:0:300}
-"
+          jq -r --argjson i "$g_index" "$FINDING_JQ"'.findings[$i] | for_issue_item' "$OUT_FILE" >>"$text_file.items"
           known=false
           for f in ${group_files[@]+"${group_files[@]}"}; do [[ "$f" == "$g_file" ]] && known=true; done
           [[ "$known" == true ]] || { group_files+=("$g_file"); markers+="$(gate_issue_marker "$g_file")
 "; }
         done <<<"$low_rows"
         issue_title="codex review: ${category} (${#group_files[@]} files)"
-        issue_body="Filed automatically by codex-review-gate: ${n_items} low-severity Codex findings of one kind (\`${category}\`) across ${#group_files[@]} files.
-
-**Branch:** \`${branch}\`
-
-${items}
-Close as *not planned* to accept these findings: the gate then stops re-filing them for every file listed.
-
-${markers}"
+        # shellcheck disable=SC2016  # Markdown code spans, not expansions.
+        { printf 'Filed automatically by codex-review-gate: %s low-severity Codex findings of one kind (`%s`) across %s files.\n\n**Branch:** `%s`\n\n' \
+            "$n_items" "$category" "${#group_files[@]}" "$branch"
+          cat "$text_file.items"; } >"$text_file"
+        printf '\nClose as *not planned* to accept these findings: the gate then stops re-filing them for every file listed.\n\n%s' "$markers" >"$footer_file"
         for f in "${group_files[@]}"; do done_pairs+=("$category"$'\t'"$f"); done
       else
         group_files=("$file")
-        issue_body="Filed automatically by codex-review-gate (low-severity Codex finding).
-
-**Location:** \`${file}:${line_start}\`
-**Branch:** \`${branch}\`
-
-${body}
-
-**Recommendation:** ${recommendation}
-
-Close as *not planned* to accept this finding: the gate then stops re-filing it for this file.
-
-$(gate_issue_marker "$file")"
+        # shellcheck disable=SC2016  # Markdown code spans, not expansions.
+        { printf 'Filed automatically by codex-review-gate (low-severity Codex finding).\n\n**Branch:** `%s`\n' "$branch"
+          jq -r --argjson i "$index" "$FINDING_JQ"'.findings[$i] | for_issue' "$OUT_FILE"; } >"$text_file"
+        printf '\nClose as *not planned* to accept this finding: the gate then stops re-filing it for this file.\n\n%s\n' "$(gate_issue_marker "$file")" >"$footer_file"
       fi
+      handled=$((handled + n_items))
       # File via REST (POST repos/{owner}/{repo}/issues), the same transport
       # as the prefetch and as harvest-codex-comments.sh: `gh issue create`
       # is GraphQL-backed, which egress-restricted sandboxes block, and it
@@ -1041,31 +1204,43 @@ $(gate_issue_marker "$file")"
       # dedup index was built from.
       if [[ "$DRY_RUN" == "true" ]]; then
         echo "  [dry-run] would file issue: $issue_title"
-      elif url="$(gh api "repos/$GATE_ISSUE_REPO/issues" -f title="$issue_title" -f body="$issue_body" -f 'labels[]=codex-review' --jq .html_url 2>/dev/null)"; then
-        echo "  ✓ filed: $url"; filed=$((filed+1))
-        for f in "${group_files[@]}"; do gate_issue_remember "${url##*/}" "$f"; done
-      elif url="$(gh api "repos/$GATE_ISSUE_REPO/issues" -f title="$issue_title" -f body="$issue_body" --jq .html_url 2>/dev/null)"; then
-        echo "  ✓ filed (no label): $url"; filed=$((filed+1))
-        for f in "${group_files[@]}"; do gate_issue_remember "${url##*/}" "$f"; done
-      else
-        yellow "  ⚠ could not file issue: $issue_title"
+        n_unpublished=$((n_unpublished + n_items))
+        continue
       fi
+      rc=0; publish_finding create "" "$issue_title" "$text_file" "$footer_file" || rc=$?
+      case "$rc" in
+        0)
+          if [[ "$PUBLISHED_LABELLED" == true ]]; then echo "  ✓ filed: $PUBLISHED_URL"; else echo "  ✓ filed (no label): $PUBLISHED_URL"; fi
+          filed=$((filed+1)) n_filed=$((n_filed + n_items))
+          for f in "${group_files[@]}"; do gate_issue_remember "${PUBLISHED_URL##*/}" "$f"; done
+          ;;
+        2)
+          # No marker was written, so no later run reads this issue as tracking
+          # the location: the finding is filed again, whole, next time.
+          yellow "  ⚠ filed ${PUBLISHED_URL} but only ${PUBLISHED_PARTS} of ${PUBLISHED_OF} part(s) were posted; it carries no location marker, so the next run files this again: $issue_title"
+          filed=$((filed+1)) n_undelivered=$((n_undelivered + n_items))
+          ;;
+        3)
+          yellow "  ⚠ too large to post (over ${ISSUE_MAX_PARTS} parts of ${ISSUE_PART_CHARS} characters, or its location markers alone fill a part): $issue_title"
+          n_undelivered=$((n_undelivered + n_items))
+          ;;
+        *)
+          yellow "  ⚠ could not file issue: $issue_title"
+          n_undelivered=$((n_undelivered + n_items))
+          ;;
+      esac
     done <<<"$low_rows"
+    n_unpublished=$((n_unpublished + N_LOW - handled))
+  fi
+  LOW_OUTCOME="$n_filed filed, $n_commented added to an open issue, $n_accepted already accepted, $n_undelivered not delivered, $n_unpublished not sent"
+  if [[ $((n_undelivered + n_unpublished)) -gt 0 ]]; then
+    echo "  Low findings not on GitHub are printed in full above${RETAINED_REVIEW:+ and kept in $RETAINED_REVIEW}."
   fi
   echo ""
 fi
 
 # ─── Gate on blocking findings ─────────────────────────────────
 if [[ "$N_BLOCK" -gt 0 ]]; then
-  red "✖ BLOCKING findings (critical/high/medium) — do not push until addressed:"
-  echo ""
-  # Category, the closing rule and the other places the defect occurs are what
-  # a repair needs in order to close the whole category in one pass (#787).
-  jq -r '.findings[] | select(.severity != "low")
-    | "  [\(.severity)] \(.title) — \(.file):\(.line_start)\n    category: \(.category)\n    \(.body)"
-      + (if .recommendation != "" then "\n    to close it: \(.recommendation)" else "" end)
-      + (.supporting_locations | map("\n    also: \(.file):\(.line_start)" + (if .note != "" then " — \(.note)" else "" end)) | join(""))' "$OUT_FILE"
-  echo ""
   if ! review_output_check complete "$OUT_FILE"; then
     yellow "  The reviewer also reports that it did not examine the whole change:"
     jq -r '.coverage.limitations[] | "    not examined: \(.)"' "$OUT_FILE"
@@ -1105,5 +1280,5 @@ fi
 gate_record_pass passed "$OUT_FILE"
 
 green "✓ Codex review passed — no blocking findings (verdict: $VERDICT). Safe to push."
-[[ "$N_LOW" -gt 0 ]] && echo "  ($N_LOW low finding(s) filed as issues.)"
+[[ "$N_LOW" -gt 0 ]] && echo "  ($N_LOW low finding(s): $LOW_OUTCOME.)"
 exit 0
