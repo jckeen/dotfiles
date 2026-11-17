@@ -926,19 +926,23 @@ if [[ "$N_LOW" -gt 0 ]]; then
     # working for every file in it. A category is reviewer text: it is reduced
     # to a slug in jq before it reaches a title, and it only ever groups.
     # Indexed arrays and linear scans, not associative arrays: bash 3.2.
+    # The last column is the other places a finding occurs (#788). It is its
+    # own column so that no renderer cutting the narrative can drop them; the
+    # list is bounded by count and each note by length, never cut mid-entry.
+    # No column is ever empty, because read collapses adjacent tabs.
     low_rows="$(jq -r '.findings[] | select(.severity == "low")
       | [(.category | ascii_downcase | gsub("[^a-z0-9]+"; "-") | sub("^-"; "") | .[0:40] | sub("-$"; "")
           | if . == "" then "uncategorized" else . end),
-         .title, .file, (.line_start|tostring),
-         # The other places a finding occurs travel with its body, so every
-         # issue and comment written from this projection keeps them (#788).
-         (.body + (if (.supporting_locations | length) > 0
-            then " Also at: " + (.supporting_locations | map("\(.file):\(.line_start)" + (if .note != "" then " (\(.note))" else "" end)) | join("; "))
-            else "" end)),
-         (if .recommendation == "" then "n/a" else .recommendation end)] | @tsv' "$OUT_FILE")"
+         .title, .file, (.line_start|tostring), .body,
+         (if .recommendation == "" then "n/a" else .recommendation end),
+         (.supporting_locations as $places
+          | if ($places | length) == 0 then "none"
+            else ($places[0:10] | map("\(.file):\(.line_start)" + (if .note != "" then " (\(.note[0:120]))" else "" end)) | join("; "))
+                 + (if ($places | length) > 10 then "; and \(($places | length) - 10) more" else "" end)
+            end)] | @tsv' "$OUT_FILE")"
     # Pass 1: which categories have new findings in two or more distinct files.
     new_cats=() new_files=() group_cats=() done_pairs=()
-    while IFS=$'\t' read -r category title file line_start body recommendation; do
+    while IFS=$'\t' read -r category title file line_start body recommendation _; do
       [[ -z "$title" ]] && continue
       read -r match number <<<"$(gate_issue_lookup "$file")"
       [[ "$match" == "none" ]] || continue
@@ -952,8 +956,12 @@ if [[ "$N_LOW" -gt 0 ]]; then
       done
       [[ "$seen" == true ]] || { new_cats+=("$category"); new_files+=("$file"); }
     done <<<"$low_rows"
-    while IFS=$'\t' read -r category title file line_start body recommendation; do
+    while IFS=$'\t' read -r category title file line_start body recommendation also; do
       [[ -z "$title" ]] && continue
+      also_block=""
+      [[ "$also" == "none" ]] || also_block="
+
+**Also at:** ${also}"
       # A finding already filed with its group in this run needs nothing more:
       # without this it would comment "seen again" on the issue that lists it.
       skip=false
@@ -976,7 +984,7 @@ if [[ "$N_LOW" -gt 0 ]]; then
 
 **Location:** \`${file}:${line_start}\`
 
-${body}
+${body}${also_block}
 
 **Recommendation:** ${recommendation}"
           if [[ "$DRY_RUN" == "true" ]]; then
@@ -1001,14 +1009,17 @@ ${body}
         # Every new finding of this category goes into one issue, in the
         # reviewer's order; each distinct file gets its own marker.
         items="" markers="" n_items=0
-        while IFS=$'\t' read -r g_cat g_title g_file g_line g_body g_rec; do
+        while IFS=$'\t' read -r g_cat g_title g_file g_line g_body g_rec g_also; do
           [[ "$g_cat" == "$category" && -n "$g_title" ]] || continue
           read -r g_match _ <<<"$(gate_issue_lookup "$g_file")"
           [[ "$g_match" == "none" ]] || continue
           n_items=$((n_items + 1))
           items+="- [ ] \`${g_file}:${g_line}\` — ${g_title}
   ${g_body:0:600}
-  **Recommendation:** ${g_rec:0:300}
+"
+          [[ "$g_also" == "none" ]] || items+="  **Also at:** ${g_also}
+"
+          items+="  **Recommendation:** ${g_rec:0:300}
 "
           known=false
           for f in ${group_files[@]+"${group_files[@]}"}; do [[ "$f" == "$g_file" ]] && known=true; done
@@ -1032,7 +1043,7 @@ ${markers}"
 **Location:** \`${file}:${line_start}\`
 **Branch:** \`${branch}\`
 
-${body}
+${body}${also_block}
 
 **Recommendation:** ${recommendation}
 
