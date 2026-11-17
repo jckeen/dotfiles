@@ -232,7 +232,7 @@ approve_clean() {
 
 # low_finding <title> <file> — one low-severity finding, the issue-feed input.
 low_finding() {
-  printf '{"verdict":"needs-attention","summary":"nit only","findings":[{"severity":"low","title":"%s","file":"%s","line_start":3,"line_end":3,"confidence":0.4,"body":"minor detail","category":"nit","recommendation":"tidy it","supporting_locations":[]}],"next_steps":[],"coverage":{"status":"complete","examined":["code.txt"],"limitations":[]}}' \
+  printf '{"verdict":"needs-attention","summary":"nit only","findings":[{"severity":"low","title":"%s","file":"%s","line_start":3,"line_end":3,"confidence":0.4,"body":"minor detail","category":"nit","recommendation":"tidy it","supporting_locations":[{"file":"other.txt","line_start":7,"line_end":7,"note":"same nit"}]}],"next_steps":[],"coverage":{"status":"complete","examined":["code.txt"],"limitations":[]}}' \
     "$1" "$2" > "$CODEX_FAKE_DIR/output"
 }
 
@@ -803,6 +803,7 @@ assert "no duplicate issue was created" "[ ! -e '$CODEX_FAKE_DIR/creates' ]"
 assert "the comment records where the finding was seen again" "grep -q 'seen again on' '$CODEX_FAKE_DIR/comments'"
 assert "the comment carries the reworded title" "grep -qF 'reworded nit number four' '$CODEX_FAKE_DIR/comments'"
 assert "the comment keeps the finding's line, body and recommendation" "grep -qF 'code.txt:3' '$CODEX_FAKE_DIR/comments' && grep -qF 'minor detail' '$CODEX_FAKE_DIR/comments' && grep -qF 'tidy it' '$CODEX_FAKE_DIR/comments'"
+assert "#788: the comment keeps the other places the finding occurs" "grep -qF 'Also at: other.txt:7 (same nit)' '$CODEX_FAKE_DIR/comments'"
 assert "dedup used the REST issue list, never a GraphQL search" "! grep -q 'issue list' '$CODEX_FAKE_DIR/gh-calls'"
 assert "the slug came from the git remote, so gh repo view was unused" "! grep -q 'repo view' '$CODEX_FAKE_DIR/gh-calls'"
 rm -rf "$R"
@@ -2629,6 +2630,16 @@ assert "#787: incomplete with low findings leaves no receipt" "! codex_receipt"
 coverage_output approve '[]' complete '[]' '[]'
 check "#787: a complete review that names nothing it examined is not an approval" 2 "incomplete review" --committed --require --no-issues
 assert "#787: it leaves no receipt either" "! codex_receipt"
+# A status of "complete" beside a listed limitation contradicts itself: the
+# reviewer named something it did not examine, so it is not an approval.
+coverage_output approve '[]' complete '["code.txt"]' '["the cancellation paths"]'
+check "#787: complete status beside an unexamined path is not an approval" 2 "incomplete review" --committed --require --no-issues
+assert "#787: the contradiction names what was not examined" "grep -qF 'not examined: the cancellation paths' <<<\"\$CHECK_OUTPUT\""
+assert "#787: the contradiction leaves no receipt" "! codex_receipt"
+coverage_output needs-attention "$LOW_FINDING" complete '["code.txt"]' '["the retry path"]'
+echo 1 > "$CODEX_FAKE_DIR/rc"
+check "#787: a failed run with contradictory coverage is a blocking verdict" 2 "a verdict, not a degraded lane" --committed --require --no-issues
+echo 0 > "$CODEX_FAKE_DIR/rc"
 # The same rule on an exit the main path never reaches: a failed run whose
 # output is incomplete is a verdict, not a degraded lane.
 rm -rf "$R/.git/review-receipts/blocks"
@@ -2645,6 +2656,10 @@ coverage_output needs-attention '[{"severity":"high","title":"exit skips the gua
 check "#787: a blocker prints its category" 2 "category: missing-exit-guard" --committed --require --no-issues
 assert "#787: a blocker prints the rule that closes it" "grep -qF 'to close it: route every exit through one guard' <<<\"\$CHECK_OUTPUT\""
 assert "#787: a blocker prints the other places it occurs" "grep -qF 'also: other.txt:7 — same exit' <<<\"\$CHECK_OUTPUT\""
+# The reviewer is told every limit its output is held to, so a sound review is
+# not rejected for a rule it could not have known.
+assert "#787: the request states the path rule supporting locations are held to" "grep -qF 'relative to the repository root' '$CODEX_FAKE_DIR/stdin' && grep -qF 'line_end is not less than line_start' '$CODEX_FAKE_DIR/stdin'"
+assert "#787: the request states that a complete review lists no limitation" "grep -qF 'only if limitations is empty' '$CODEX_FAKE_DIR/stdin'"
 # A committed review tells the reviewer which commit to read context from; a
 # working-tree review has no pinned commit to name.
 assert "#787: a committed review names the commit to read context from" "grep -qF \"git show \$(git -C '$R' rev-parse HEAD):\" '$CODEX_FAKE_DIR/stdin'"

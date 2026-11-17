@@ -24,10 +24,14 @@
   both, and holds each location to a repository-relative path with an ordered
   line range.
 - **Approval now requires complete coverage.** A review whose coverage is not
-  `complete`, or that names nothing it examined, blocks with exit 2 and a
-  block marker, whatever its verdict or findings. The same rule applies to a
+  `complete`, that names nothing it examined, or that lists anything it did
+  not examine, blocks with exit 2 and a block marker, whatever its verdict or
+  findings. The prompt and the schema descriptions state every limit the
+  local validator holds the output to. The same rule applies to a
   failed, cancelled or superseded run through the one output validator.
 - **Blocking output** prints each finding's category, the rule that closes it
   and the other places it occurs. The gate had been discarding the first two.
+- **Low-finding issues and comments** keep the other places a finding occurs
+  (#788).
 - A receipt recorded before this change stays valid: `check` reads the stored
   review's digest, not its shape.

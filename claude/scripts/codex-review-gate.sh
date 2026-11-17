@@ -182,11 +182,14 @@ if not (
 ):
     raise ValueError("review does not match codex-review-schema.json")
 # "complete" is the coverage half of the pass rule (#787): the reviewer says it
-# examined the whole target and names what it examined. A review that says it
-# could not examine part of the change is not an approval, whatever it found.
+# examined the whole target, names what it examined, and lists nothing it
+# could not examine. A review that reports any unexamined part of the change
+# is not an approval, whatever its status says or whatever it found: a status
+# of "complete" beside a limitation contradicts itself, and fails closed.
 if mode in ("complete", "clean") and not (
     result["coverage"]["status"] == "complete"
     and len(result["coverage"]["examined"]) > 0
+    and len(result["coverage"]["limitations"]) == 0
 ):
     raise ValueError("review does not cover the whole target")
 # "clean" is the main path's whole pass rule on top of the schema: a complete
@@ -601,9 +604,24 @@ defect in different places, give them exactly the same category, so they are
 tracked together.
 
 Fill in coverage honestly. examined lists the contracts and paths you mapped
-and checked. limitations lists anything you were unable to examine. status is
-\"complete\" only if you examined all of the changes and the paths that depend
-on them; otherwise it is \"incomplete\", and the gate will not approve. If the
+and checked, and names at least one. limitations lists every part of the
+changes, or of the paths that depend on them, that you were unable to examine,
+and nothing else: a caveat that is not an unexamined part belongs in the
+summary. status is \"complete\" only if limitations is empty; otherwise it is
+\"incomplete\". The gate approves only a complete review with an empty
+limitations list.
+
+The gate validates your output and rejects the whole review if any of this
+does not hold:
+  * every file you name, in a finding's supporting_locations, is a path
+    relative to the repository root: no leading slash, no '..' segment, no
+    control characters, at most 400 characters;
+  * in a supporting location, line_end is not less than line_start;
+  * a finding has at most 40 supporting_locations, each note at most 600
+    characters;
+  * examined and limitations each have at most 60 entries of at most 600
+    characters.
+If the
 change is sound, verdict is \"approve\" with an empty findings array."
 
 if [[ -n "$CLAIM" || -n "$REPRO" ]]; then
@@ -911,7 +929,13 @@ if [[ "$N_LOW" -gt 0 ]]; then
     low_rows="$(jq -r '.findings[] | select(.severity == "low")
       | [(.category | ascii_downcase | gsub("[^a-z0-9]+"; "-") | sub("^-"; "") | .[0:40] | sub("-$"; "")
           | if . == "" then "uncategorized" else . end),
-         .title, .file, (.line_start|tostring), .body, (if .recommendation == "" then "n/a" else .recommendation end)] | @tsv' "$OUT_FILE")"
+         .title, .file, (.line_start|tostring),
+         # The other places a finding occurs travel with its body, so every
+         # issue and comment written from this projection keeps them (#788).
+         (.body + (if (.supporting_locations | length) > 0
+            then " Also at: " + (.supporting_locations | map("\(.file):\(.line_start)" + (if .note != "" then " (\(.note))" else "" end)) | join("; "))
+            else "" end)),
+         (if .recommendation == "" then "n/a" else .recommendation end)] | @tsv' "$OUT_FILE")"
     # Pass 1: which categories have new findings in two or more distinct files.
     new_cats=() new_files=() group_cats=() done_pairs=()
     while IFS=$'\t' read -r category title file line_start body recommendation; do
@@ -1064,6 +1088,7 @@ fi
 if ! review_output_check complete "$OUT_FILE"; then
   red "✖ Codex reports an incomplete review — not an approval:"
   echo "  Summary: $SUMMARY"
+  echo "  Coverage status: $(jq -r '.coverage.status' "$OUT_FILE"); areas examined: $(jq '.coverage.examined | length' "$OUT_FILE")"
   jq -r '.coverage.limitations[] | "  not examined: \(.)"' "$OUT_FILE"
   red "Push blocked: the reviewer did not examine the whole change (fail closed)."
   gate_block
