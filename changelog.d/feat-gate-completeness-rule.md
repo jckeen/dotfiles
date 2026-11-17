@@ -47,13 +47,16 @@
   exists, and the gate prints the path. A blocking, failed or cancelled
   review used to leave its findings only in the terminal. The record is
   evidence only and never decides a verdict.
-- **Location markers are data (#790).** A file name is percent-encoded in
-  its marker (`%`, `<`, `>` and control characters), so a name can neither
-  end the marker nor spell a second one, and two names never share a marker.
-  The name is read from the reviewer's JSON, not from a tab-separated row, so
-  the marker written for a path containing a backslash is the one the next
-  run looks up. Markers for ordinary paths are unchanged; an issue filed
-  earlier for a path containing one of those characters is filed once more.
+- **Location markers are data (#790).** A file name containing `%`, `<`,
+  `>`, a backslash or a control character is written percent-encoded under a
+  second marker name, `codex-gate-loc2`, so it can neither end the marker nor
+  spell another one, and it can never be read as a marker the first format
+  wrote. Every other name keeps the marker it always had. The name is read
+  from the reviewer's JSON, not from a tab-separated row. An issue filed
+  earlier for a name that now takes the second format is filed once more.
+- **A multi-part issue is completed without overwriting it.** The location
+  marker is appended to the issue body as it stands when the last part is up,
+  so an edit made on GitHub in the meantime is kept.
 - **Reviewer text cannot drive the terminal.** The findings, the summary, the
   coverage limitations, the next steps and the dump of an output that failed
   validation all print through one filter that replaces control characters.

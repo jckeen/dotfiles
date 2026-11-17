@@ -169,7 +169,15 @@ if [ "$1" = api ]; then
       for a in "$@"; do [ "$prev" = "--jq" ] && filter="$a"; prev="$a"; done
       jq -r "$filter" "$CODEX_FAKE_DIR/issues.json" || exit 1
       exit 0 ;;
-    */issues|*/issues/[0-9]*)
+    */issues/[0-9]*|*/issues)
+      # A read of one issue (no --input): its body as it stands now. A case
+      # writes $CODEX_FAKE_DIR/latest-body to stand in for an edit made on
+      # GitHub after the issue was created.
+      case " $* " in *" --input "*) ;; *)
+        [ -f "$CODEX_FAKE_DIR/read-fails" ] && exit 1
+        if [ -f "$CODEX_FAKE_DIR/latest-body" ]; then cat "$CODEX_FAKE_DIR/latest-body"; else cat "$CODEX_FAKE_DIR/created-bodies"; fi
+        exit 0 ;;
+      esac
       # Writes arrive as JSON on stdin (--input -) and are answered with the
       # status line and headers (--include), as `gh api` does. Each write is
       # numbered; touch $CODEX_FAKE_DIR/fail-write-N to refuse the Nth, or
@@ -936,6 +944,21 @@ assert "#788: the closing line says what was delivered" "grep -qF '1 filed, 0 ad
 assert "#788: the review output is kept, byte for byte" "[ -n \"\$(retained)\" ] && cmp -s \"\$(retained)\" '$CODEX_FAKE_DIR/output'"
 rm -rf "$R"
 
+# An edit made on GitHub while the parts upload is kept: the marker is added
+# to the body as it stands, not to the copy the gate sent.
+feed_repo
+review_with "$BIG_FINDING"
+printf 'edited by a person while the parts were uploading\n' > "$CODEX_FAKE_DIR/latest-body"
+check "#788: a multi-part issue edited meanwhile is still completed" 0 "✓ filed:" --uncommitted
+assert "#788: the edit survives and the marker is added to it" "grep -qxF 'edited by a person while the parts were uploading' '$CODEX_FAKE_DIR/patched-body' && grep -qF '<!-- codex-gate-loc:acme/widgets:code.txt -->' '$CODEX_FAKE_DIR/patched-body'"
+rm -rf "$R"
+feed_repo
+review_with "$BIG_FINDING"
+: > "$CODEX_FAKE_DIR/read-fails"
+check "#788: an issue whose current body cannot be read is not completed blind" 0 "it carries no location marker" --uncommitted
+assert "#788: no body was written over it" "[ ! -e '$CODEX_FAKE_DIR/patched-body' ]"
+rm -rf "$R"
+
 # A part that fails leaves the issue without its marker, so it is not read as
 # tracking the location, and the run says the finding was not delivered.
 feed_repo
@@ -986,7 +1009,7 @@ rm -rf "$R"
 feed_repo
 review_with '[{"severity":"low","category":"nit","title":"odd name","file":"code.txt <!-- codex-gate-loc:acme/widgets:victim.txt","line_start":1,"line_end":1,"confidence":0.3,"body":"b","recommendation":"r","supporting_locations":[]}]'
 check "#788: a finding whose file name quotes a marker is filed" 0 "✓ filed:" --uncommitted
-assert "#788: the file name cannot write a marker for another file" "! grep -qF '<!-- codex-gate-loc:acme/widgets:victim.txt' '$CODEX_FAKE_DIR/created-bodies' && [ \"\$(grep -c '^<!-- codex-gate-loc:' '$CODEX_FAKE_DIR/created-bodies')\" -eq 1 ]"
+assert "#788: the file name cannot write a marker for another file" "! grep -qF '<!-- codex-gate-loc:acme/widgets:victim.txt' '$CODEX_FAKE_DIR/created-bodies' && [ \"\$(grep -c '^<!-- codex-gate-loc2:' '$CODEX_FAKE_DIR/created-bodies')\" -eq 1 ]"
 jq -Rs '[{number:41,state:"closed",state_reason:"not_planned",body:.}]' "$CODEX_FAKE_DIR/created-bodies" > "$CODEX_FAKE_DIR/issues.json"
 rm -f "$CODEX_FAKE_DIR/creates" "$CODEX_FAKE_DIR/created-bodies"
 low_finding "an unrelated nit" victim.txt
@@ -2345,16 +2368,19 @@ assert "a completed closure leaves the location fileable again" "($GL GATE_ISSUE
 assert "a marker for another file never matches" "($GL GATE_ISSUE_INDEX=\$'$OPEN_REC'; [[ \"\$(gate_issue_lookup other.sh)\" == 'none' ]])"
 assert "an empty index files everything" "($GL GATE_ISSUE_INDEX=''; [[ \"\$(gate_issue_lookup f.sh)\" == 'none' ]])"
 assert "a just-filed location is remembered within the run" "($GL gate_issue_remember 5 f.sh; [[ \"\$(gate_issue_lookup f.sh)\" == 'open 5' ]])"
-assert "a path cannot terminate the marker comment early" "($GL [[ \"\$(gate_issue_marker 'a-->b')\" == '<!-- codex-gate-loc:o/r:a--%3Eb -->' ]])"
-assert "a path cannot open a second marker, and two paths never share one" "($GL [[ \"\$(gate_issue_marker 'a<!--b%3C')\" == '<!-- codex-gate-loc:o/r:a%3C!--b%253C -->' ]])"
-assert "a control character in a path is written as data" "($GL [[ \"\$(gate_issue_marker \$'a\\tb')\" == '<!-- codex-gate-loc:o/r:a%09b -->' ]])"
-# jq @tsv doubles backslashes in the indexed body and read -r keeps them, so a
-# backslash path must be looked up in that escaped form (issue body as GitHub
-# returns it: `dir\name.sh`; as indexed: `dir\\name.sh`).
-BS_REC='3\topen\t-\t<!-- codex-gate-loc:o/r:dir\\\\name.sh -->'
-assert "a backslash path matches its @tsv-escaped index record" "($GL GATE_ISSUE_INDEX=\$'$BS_REC'; [[ \"\$(gate_issue_lookup 'dir\\name.sh')\" == 'open 3' ]])"
+assert "an ordinary path keeps the marker it always had" "($GL [[ \"\$(gate_issue_marker 'dir/a b-c_d.sh')\" == '<!-- codex-gate-loc:o/r:dir/a b-c_d.sh -->' ]])"
+assert "a path cannot terminate the marker comment early" "($GL [[ \"\$(gate_issue_marker 'a-->b')\" == '<!-- codex-gate-loc2:o/r:a--%3Eb -->' ]])"
+assert "a path cannot open a second marker, and two paths never share one" "($GL [[ \"\$(gate_issue_marker 'a<!--b%3C')\" == '<!-- codex-gate-loc2:o/r:a%3C!--b%253C -->' ]])"
+assert "a control character in a path is written as data" "($GL [[ \"\$(gate_issue_marker \$'a\\tb')\" == '<!-- codex-gate-loc2:o/r:a%09b -->' ]])"
+# The old format wrote a literal a%3Cb.txt as itself, and a one-backslash name
+# with the backslash doubled. Neither may be read as the new marker of a
+# different file, and an accepted old issue must not suppress one.
+OLD_PCT='41\tclosed\tnot_planned\t<!-- codex-gate-loc:o/r:a%3Cb.txt -->'
+assert "an old marker for a literal percent name does not accept another file" "($GL GATE_ISSUE_INDEX=\$'$OLD_PCT'; [[ \"\$(gate_issue_lookup 'a<b.txt')\" == 'none' ]])"
+OLD_BS='41\tclosed\tnot_planned\t<!-- codex-gate-loc:o/r:dir\\\\\\\\name.sh -->'
+assert "an old doubled-backslash marker does not accept a two-backslash name" "($GL GATE_ISSUE_INDEX=\$'$OLD_BS'; [[ \"\$(gate_issue_lookup 'dir\\\\name.sh')\" == 'none' ]])"
 assert "a backslash path remembered in-run is found again" "($GL gate_issue_remember 4 'dir\\name.sh'; [[ \"\$(gate_issue_lookup 'dir\\name.sh')\" == 'open 4' ]])"
-assert "the filed marker itself keeps a single backslash" "($GL [[ \"\$(gate_issue_marker 'dir\\name.sh')\" == '<!-- codex-gate-loc:o/r:dir\\name.sh -->' ]])"
+assert "a backslash path is written in the second format" "($GL [[ \"\$(gate_issue_marker 'dir\\name.sh')\" == '<!-- codex-gate-loc2:o/r:dir%5Cname.sh -->' ]])"
 
 assert "a glob spans directory separators" "(source '$SCRIPT_DIR/../gate-lib.sh'; [[ \"\$(gate_match_ignored_paths '**/fixtures/**' 'a/b/fixtures/c/d.txt')\" == 'a/b/fixtures/c/d.txt' ]])"
 assert "a non-matching path is not reported as ignored" "(source '$SCRIPT_DIR/../gate-lib.sh'; [[ -z \"\$(gate_match_ignored_paths '**/fixtures/**' 'a/b/c.txt')\" ]])"

@@ -488,25 +488,37 @@ GATE_ISSUE_INDEX=""
 GATE_ISSUE_NO_REASON="-"
 
 # gate_issue_marker <file> — the exact marker text for a location.
+# Two formats, told apart by their name, so neither can be read as the other:
+#   codex-gate-loc:   the file name as written. Used, as it always has been,
+#                     for a name with no `%`, `<`, `>`, backslash or control
+#                     character: for such a name it is already unambiguous,
+#                     and issues filed before the second format keep matching.
+#   codex-gate-loc2:  every other name, with those characters percent-encoded.
+#                     The name can then neither end the comment nor spell a
+#                     second marker inside it, no two names share a marker,
+#                     and nothing in it is rewritten by the index's @tsv.
+# A name that needs the second format is never looked up in the first: what
+# the first format wrote for such names (characters dropped, backslashes
+# doubled by the row it once passed through) cannot be told from another
+# file's marker, so an issue filed that way is filed once more instead.
 gate_issue_marker() {
-  # The marker is an HTML comment and lookups match it as a substring, so the
-  # file name is written as data that cannot contain comment syntax: `%`, `<`
-  # and `>` and every control character are percent-encoded. A name can then
-  # neither end the comment early nor spell a second marker inside it, and two
-  # different names never share a marker. Ordinary paths are unchanged.
   local file="$1" encoded="" char i
-  file="${file//%/%25}"
-  file="${file//</%3C}"
-  file="${file//>/%3E}"
-  if [[ "$file" == *[[:cntrl:]]* ]]; then
-    for ((i = 0; i < ${#file}; i++)); do
-      char="${file:i:1}"
-      [[ "$char" != [[:cntrl:]] ]] || printf -v char '%%%02X' "'$char"
-      encoded+="$char"
-    done
-    file="$encoded"
+  if [[ "$file" != *[%\<\>\\[:cntrl:]]* ]]; then
+    printf '<!-- codex-gate-loc:%s:%s -->' "$GATE_ISSUE_REPO" "$file"
+    return 0
   fi
-  printf '<!-- codex-gate-loc:%s:%s -->' "$GATE_ISSUE_REPO" "$file"
+  for ((i = 0; i < ${#file}; i++)); do
+    char="${file:i:1}"
+    case "$char" in
+      %) char=%25 ;;
+      \<) char=%3C ;;
+      \>) char=%3E ;;
+      \\) char=%5C ;;
+      [[:cntrl:]]) printf -v char '%%%02X' "'$char" ;;
+    esac
+    encoded+="$char"
+  done
+  printf '<!-- codex-gate-loc2:%s:%s -->' "$GATE_ISSUE_REPO" "$encoded"
 }
 
 # gate_issue_index_marker <file> — the marker as it appears in GATE_ISSUE_INDEX.

@@ -1066,7 +1066,13 @@ publish_finding() {
     PUBLISHED_PARTS="$i"
   done
   if [[ "$kind" == create && "$count" -gt 1 ]]; then
-    cat "$work/body1" "$footer" >"$work/final" || return 2
+    # The footer is added to the body as it is NOW, not to the copy sent
+    # earlier: the issue has been open to edits for as long as the parts took
+    # to upload, and a checked box or a note written meanwhile must survive.
+    # GitHub offers no conditional update for an issue, so an edit landing
+    # between this read and the write below can still be lost.
+    gh api "repos/$GATE_ISSUE_REPO/issues/${number}" --jq '.body // ""' </dev/null >"$work/latest" 2>/dev/null || return 2
+    cat "$work/latest" "$footer" >"$work/final" || return 2
     payload="$(jq -nc --rawfile body "$work/final" '{body: $body}')" || return 2
     gate_issue_send "repos/$GATE_ISSUE_REPO/issues/${number}" "$payload" PATCH || return 2
   fi
