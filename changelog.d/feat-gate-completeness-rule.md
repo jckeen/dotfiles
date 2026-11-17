@@ -1,9 +1,9 @@
 ## 2026-11-17 — feat(gates): the Codex review covers the whole category on the first pass (#787)
 
-Gated pull requests in one application repo averaged 2.2 gate rounds, and a
-third of them took three or more. The reviewer reported one instance of a
-defect per round, and a review that said it had skipped part of the change
-could still pass.
+- **Why**: gated pull requests in one application repo averaged 2.2 gate
+  rounds, and a third of them took three or more. The reviewer reported one
+  instance of a defect per round, and a review that said it had skipped part
+  of the change could still pass.
 
 - **Review prompt (`claude/scripts/codex-review-gate.sh`)**: the gate-computed
   diff still defines what changed, and repository reads now establish what the
