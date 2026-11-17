@@ -31,7 +31,5 @@
   failed, cancelled or superseded run through the one output validator.
 - **Blocking output** prints each finding's category, the rule that closes it
   and the other places it occurs. The gate had been discarding the first two.
-- **Low-finding issues and comments** keep the other places a finding occurs
-  (#788).
 - A receipt recorded before this change stays valid: `check` reads the stored
   review's digest, not its shape.

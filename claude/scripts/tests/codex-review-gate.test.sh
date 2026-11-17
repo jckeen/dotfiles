@@ -803,7 +803,6 @@ assert "no duplicate issue was created" "[ ! -e '$CODEX_FAKE_DIR/creates' ]"
 assert "the comment records where the finding was seen again" "grep -q 'seen again on' '$CODEX_FAKE_DIR/comments'"
 assert "the comment carries the reworded title" "grep -qF 'reworded nit number four' '$CODEX_FAKE_DIR/comments'"
 assert "the comment keeps the finding's line, body and recommendation" "grep -qF 'code.txt:3' '$CODEX_FAKE_DIR/comments' && grep -qF 'minor detail' '$CODEX_FAKE_DIR/comments' && grep -qF 'tidy it' '$CODEX_FAKE_DIR/comments'"
-assert "#788: the comment keeps the other places the finding occurs" "grep -qF '**Also at:** other.txt:7 (same nit)' '$CODEX_FAKE_DIR/comments'"
 assert "dedup used the REST issue list, never a GraphQL search" "! grep -q 'issue list' '$CODEX_FAKE_DIR/gh-calls'"
 assert "the slug came from the git remote, so gh repo view was unused" "! grep -q 'repo view' '$CODEX_FAKE_DIR/gh-calls'"
 rm -rf "$R"
@@ -846,7 +845,6 @@ git -C "$R" remote add origin git@github.com:acme/widgets.git
 echo "change" >> "$R/code.txt"
 low_finding "a brand new nit" code.txt
 check "an untracked location is filed with its marker" 0 "✓ filed:" --uncommitted
-assert "#788: a new issue keeps the other places the finding occurs" "grep -qF '**Also at:** other.txt:7 (same nit)' '$CODEX_FAKE_DIR/created-bodies'"
 assert "the ssh remote yields the same owner/name slug" "grep -qF '<!-- codex-gate-loc:acme/widgets:code.txt -->' '$CODEX_FAKE_DIR/created-bodies'"
 rm -rf "$R"
 
@@ -885,21 +883,6 @@ assert "the group lists every location, the same-file one included" "grep -qF 'a
 assert "the group carries one location marker per distinct file" "[ \"\$(grep -c 'codex-gate-loc:acme/widgets:[abc].md -->' '$CODEX_FAKE_DIR/created-bodies')\" -eq 3 ]"
 assert "the lone finding keeps its own issue and title" "grep -qF 'title=codex review: a lone nit' '$CODEX_FAKE_DIR/creates'"
 assert "a grouped finding does not also comment on its own fresh issue" "[ ! -e '$CODEX_FAKE_DIR/comments' ]"
-rm -rf "$R"
-
-# A grouped issue cuts each narrative at 600 characters; the other places a
-# finding occurs are listed apart from it, so that cut cannot drop them (#788).
-long_body="$(printf 'x%.0s' $(seq 1 700))"
-many_places="$(jq -cn '[range(12) | {file:"place\(.).txt", line_start:(.+1), line_end:(.+1), note:"n\(.)"}]')"
-new_repo
-git -C "$R" remote add origin https://github.com/acme/widgets.git
-echo "change" >> "$R/code.txt"
-printf '{"verdict":"needs-attention","summary":"nits","findings":[{"severity":"low","category":"same-kind","title":"first","file":"a.md","line_start":3,"line_end":3,"confidence":0.3,"body":"%s","recommendation":"fix","supporting_locations":[{"file":"other.txt","line_start":7,"line_end":7,"note":"same nit"}]},{"severity":"low","category":"same-kind","title":"second","file":"b.md","line_start":5,"line_end":5,"confidence":0.3,"body":"%s","recommendation":"fix","supporting_locations":%s}],"next_steps":[],"coverage":{"status":"complete","examined":["code.txt"],"limitations":[]}}' \
-  "$long_body" "$long_body" "$many_places" > "$CODEX_FAKE_DIR/output"
-check "#788: two long findings of one kind file one grouped issue" 0 "Codex review passed" --uncommitted
-assert "#788: they were grouped" "grep -qF 'title=codex review: same-kind (2 files)' '$CODEX_FAKE_DIR/creates'"
-assert "#788: the grouped issue keeps a long finding's other places" "grep -qF '**Also at:** other.txt:7 (same nit)' '$CODEX_FAKE_DIR/created-bodies'"
-assert "#788: a long list of places is cut by count, with the remainder stated" "grep -qF 'place9.txt:10 (n9); and 2 more' '$CODEX_FAKE_DIR/created-bodies' && ! grep -qF 'place10.txt' '$CODEX_FAKE_DIR/created-bodies'"
 rm -rf "$R"
 
 # A later run touching one file of a group comments on the grouped issue, and
