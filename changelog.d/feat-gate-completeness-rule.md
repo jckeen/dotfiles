@@ -65,6 +65,12 @@
   own footer and parts flag has its HTML comment delimiters escaped at the
   one place all of it passes, so a reviewer's title in a comment heading, or
   a branch name, cannot write a location marker.
+- **Markers and sizes do not follow the locale (#791).** A location marker is
+  derived from the file name's bytes under the C locale, so the run that
+  files a finding and the run that looks it up agree whatever locale each
+  started in. The footer is counted in characters by the same UTF-8 decoder
+  as the splitter, where `wc -m` counted bytes under C and could refuse a
+  group as too large.
 - **A closed terminal cannot keep a blocking verdict off the record.** The
   gate keeps the reviewer's output and writes the blocking marker before it
   prints anything about either, and its exit and cancellation handlers ignore

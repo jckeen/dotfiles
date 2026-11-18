@@ -1119,6 +1119,19 @@ check "#787: that comment, indexed on an accepted issue, accepts nothing" 0 "✓
 assert "#787: the finding for the named file was filed" "[ \"\$(wc -l < '$CODEX_FAKE_DIR/create-count' | tr -d ' ')\" -eq 1 ] && ! grep -qF 'accepted (#41)' <<<\"\$CHECK_OUTPUT\""
 rm -rf "$R"
 
+# Sizing does not follow the locale (#791): eighty findings of one kind in
+# files with long CJK names make a footer of about twelve thousand characters
+# and more than thirty thousand bytes. Counted in bytes, as `wc -m` does under
+# C, it would be refused as too large and nothing would be posted.
+cjk_dir="$(printf '\xe6\x96\x87%.0s' $(seq 1 60))"
+cjk_group="$(jq -cn --arg dir "$cjk_dir" '[range(80) | {severity:"low",category:"same-kind",title:"nit \(.)",file:"\($dir)/\($dir)/f\(.).txt",line_start:1,line_end:1,confidence:0.3,body:"b",recommendation:"r",supporting_locations:[]}]')"
+feed_repo
+review_with "$cjk_group"
+LC_ALL=C check "#791: a group with long non-ASCII names is filed under the C locale" 0 "✓ filed:" --uncommitted
+assert "#791: every one of the eighty markers went up" "[ \"\$(posted | grep -c '^<!-- codex-gate-loc:acme/widgets:')\" -eq 80 ]"
+assert "#791: all eighty count as filed" "grep -qF '80 filed, 0 added to an open issue, 0 already accepted, 0 not delivered, 0 not sent' <<<\"\$CHECK_OUTPUT\""
+rm -rf "$R"
+
 # The same finding on an already tracked location goes up as comments, whole.
 feed_repo
 review_with "$BIG_FINDING"
@@ -2529,6 +2542,21 @@ assert "an old marker for a literal percent name does not accept another file" "
 OLD_BS='41\tclosed\tnot_planned\t<!-- codex-gate-loc:o/r:dir\\\\\\\\name.sh -->'
 assert "an old doubled-backslash marker does not accept a two-backslash name" "($GL GATE_ISSUE_INDEX=\$'$OLD_BS'; [[ \"\$(gate_issue_lookup 'dir\\\\name.sh')\" == 'none' ]])"
 assert "a backslash path remembered in-run is found again" "($GL gate_issue_remember 4 'dir\\name.sh'; [[ \"\$(gate_issue_lookup 'dir\\name.sh')\" == 'open 4' ]])"
+# A marker is the same text in every locale (#791): a name holding U+0085, a
+# control character only a UTF-8 locale recognises, and a CJK name.
+UTF8_LOCALE="$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.utf-?8$' | head -1)"
+# shellcheck disable=SC2034  # marker_c and accepted_c are read by assert's evaluated conditions.
+for odd_name in $'name\xc2\x85.txt' $'\xe6\x96\x87\xe4\xbb\xb6/\xe5\x90\x8d.txt'; do
+  marker_c="$(LC_ALL=C bash -c "$GL gate_issue_marker \"\$1\"" _ "$odd_name")"
+  assert "a non-ASCII name keeps its bytes in the first marker format" "[[ \"\$marker_c\" == \"<!-- codex-gate-loc:o/r:\$odd_name -->\" ]]"
+  if [ -n "$UTF8_LOCALE" ]; then
+    marker_u="$(LC_ALL="$UTF8_LOCALE" bash -c "$GL gate_issue_marker \"\$1\"" _ "$odd_name")"
+    assert "its marker is the same under $UTF8_LOCALE as under C" "[[ \"\$marker_u\" == \"\$marker_c\" ]]"
+    accepted_c="$(LC_ALL=C bash -c "$GL GATE_ISSUE_INDEX=\$'41\\tclosed\\tnot_planned\\t'\"\$2\"; gate_issue_lookup \"\$1\"" _ "$odd_name" "$marker_u")"
+    assert "an acceptance recorded under $UTF8_LOCALE is found under C" "[[ \"\$accepted_c\" == 'accepted 41' ]]"
+  fi
+done
+assert "a file's length is counted in characters under C" "[[ \"\$(printf '\xe6\x96\x87\xe4\xbb\xb6' > '$SHIM_DIR/two-chars'; LC_ALL=C bash -c \"$GL gate_text_chars '$SHIM_DIR/two-chars'\")\" == 2 ]]"
 assert "a backslash path is written in the second format" "($GL [[ \"\$(gate_issue_marker 'dir\\name.sh')\" == '<!-- codex-gate-loc2:o/r:dir%5Cname.sh -->' ]])"
 
 assert "a glob spans directory separators" "(source '$SCRIPT_DIR/../gate-lib.sh'; [[ \"\$(gate_match_ignored_paths '**/fixtures/**' 'a/b/fixtures/c/d.txt')\" == 'a/b/fixtures/c/d.txt' ]])"

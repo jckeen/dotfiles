@@ -504,6 +504,11 @@ GATE_ISSUE_NO_REASON="-"
 # shellcheck disable=SC2034  # Also read by the sourcing gate.
 GATE_ISSUE_PARTS_FLAG='<!-- codex-gate-parts -->'
 gate_issue_marker() {
+  # A marker is a persisted key, written by one run and matched by another,
+  # so it is derived from the name's bytes: under the C locale bash walks
+  # bytes and `[:cntrl:]` is the ASCII control set, whatever locale the gate
+  # was started in. A name that is not ASCII keeps its bytes as they are.
+  local LC_ALL=C
   local file="$1" encoded="" char i
   if [[ "$file" != *[%\<\>\\[:cntrl:]]* ]]; then
     printf '<!-- codex-gate-loc:%s:%s -->' "$GATE_ISSUE_REPO" "$file"
@@ -639,6 +644,18 @@ gate_issue_lookup() {
 # a second finding at the same location in this run comments instead of filing.
 gate_issue_remember() {
   GATE_ISSUE_INDEX+=$'\n'"$1"$'\t'"open"$'\t'"$GATE_ISSUE_NO_REASON"$'\t'"$(gate_issue_index_marker "$2")"
+}
+
+# gate_text_chars <file> — print the file's length in characters, counted as
+# gate_split_text counts them (UTF-8 code points), not as `wc -m` does, whose
+# answer follows the locale and is a byte count under C.
+gate_text_chars() {
+  python3 - "$1" <<'PYCHARS'
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="surrogateescape", newline="") as stream:
+    print(len(stream.read()))
+PYCHARS
 }
 
 # gate_split_text <file> <limit> <prefix> — write <file> as <prefix>1..N, each

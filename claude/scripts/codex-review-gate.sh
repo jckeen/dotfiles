@@ -1093,9 +1093,9 @@ publish_finding() {
   local work budget count payload part body i footer_chars
   PUBLISHED_URL="" PUBLISHED_LABELLED=true PUBLISHED_PARTS=0 PUBLISHED_OF=0
   work="$(mktemp -d "$GATE_RUN_DIR/publish.XXXXXX")" || return 1
-  footer_chars="$(wc -m <"$footer")" || return 1
-  [[ "$footer_chars" =~ ^[[:space:]]*([0-9]+)[[:space:]]*$ ]] || return 1
-  budget=$((ISSUE_PART_CHARS - BASH_REMATCH[1] - 200))
+  footer_chars="$(gate_text_chars "$footer")" || return 1
+  [[ "$footer_chars" =~ ^[0-9]+$ ]] || return 1
+  budget=$((ISSUE_PART_CHARS - footer_chars - 200))
   [[ -s "$text" ]] || return 1
   # Only the footer and the parts flag, which the gate writes itself, may
   # hold a literal HTML comment. The text is everything else a caller put
@@ -1103,7 +1103,9 @@ publish_finding() {
   # rendered finding), and whatever it holds, no part of it can open or
   # close a comment once it has been through here: a marker is a comment,
   # and the index reads markers from bodies and from comments alike.
-  sed -e 's/<!--/\&lt;!--/g' -e 's/-->/--\&gt;/g' "$text" >"$work/text" || return 1
+  # Bytewise: the delimiters are ASCII, and a sed that decodes its input can
+  # refuse a line or skip a match, depending on the locale.
+  LC_ALL=C sed -e 's/<!--/\&lt;!--/g' -e 's/-->/--\&gt;/g' "$text" >"$work/text" || return 1
   [[ -s "$work/text" ]] || return 1
   text="$work/text"
   [[ "$budget" -ge 1000 ]] || return 3
