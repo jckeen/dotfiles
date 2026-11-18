@@ -501,6 +501,8 @@ GATE_ISSUE_NO_REASON="-"
 # the first format wrote for such names (characters dropped, backslashes
 # doubled by the row it once passed through) cannot be told from another
 # file's marker, so an issue filed that way is filed once more instead.
+# shellcheck disable=SC2034  # Also read by the sourcing gate.
+GATE_ISSUE_PARTS_FLAG='<!-- codex-gate-parts -->'
 gate_issue_marker() {
   local file="$1" encoded="" char i
   if [[ "$file" != *[%\<\>\\[:cntrl:]]* ]]; then
@@ -566,6 +568,7 @@ gate_repo_slug() {
 # unavailable; a caller that files anyway files blind, which is the duplicate
 # noise this exists to stop.
 gate_issue_prefetch() {
+  local num state reason body author line extra
   if [[ -n "${1:-}" ]]; then
     GATE_ISSUE_REPO="$1"
   else
@@ -584,6 +587,25 @@ gate_issue_prefetch() {
     gh api "repos/$GATE_ISSUE_REPO/issues?state=all&per_page=100" --paginate \
     --jq '.[] | select(.pull_request == null)
           | [(.number|tostring), .state, (.state_reason // env.GATE_ISSUE_NO_REASON), (.body // "")] | @tsv' 2>/dev/null)" || return 1
+  # An issue filed in parts keeps its location markers in a closing comment
+  # (publish_finding in codex-review-gate.sh), so its comments join the index
+  # as further rows for the same issue. Only the issue author's: anyone may
+  # comment on a public issue, and a marker is what makes a location read as
+  # tracked or accepted. A read that fails fails the prefetch, so the caller
+  # files nothing rather than filing blind. Issues closed as completed are
+  # skipped: gate_issue_lookup never matches them.
+  while IFS=$'\t' read -r num state reason body; do
+    [[ -n "$num" && "$body" == *"$GATE_ISSUE_PARTS_FLAG"* ]] || continue
+    [[ "$state" == open || "$reason" == not_planned ]] || continue
+    author="$(gh api "repos/$GATE_ISSUE_REPO/issues/$num" --jq '.user.login // ""' 2>/dev/null)" || return 1
+    [[ -n "$author" ]] || return 1
+    extra="$(GATE_ISSUE_AUTHOR="$author" \
+      gh api "repos/$GATE_ISSUE_REPO/issues/$num/comments?per_page=100" --paginate \
+      --jq '.[] | select(.user.login == env.GATE_ISSUE_AUTHOR) | [(.body // "")] | @tsv' 2>/dev/null)" || return 1
+    while IFS= read -r line; do
+      [[ -z "$line" ]] || GATE_ISSUE_INDEX+=$'\n'"$num"$'\t'"$state"$'\t'"$reason"$'\t'"$line"
+    done <<<"$extra"
+  done <<<"$GATE_ISSUE_INDEX"
   return 0
 }
 

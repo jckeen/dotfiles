@@ -54,9 +54,19 @@
   wrote. Every other name keeps the marker it always had. The name is read
   from the reviewer's JSON, not from a tab-separated row. An issue filed
   earlier for a name that now takes the second format is filed once more.
-- **A multi-part issue is completed without overwriting it.** The location
-  marker is appended to the issue body as it stands when the last part is up,
-  so an edit made on GitHub in the meantime is kept.
+- **A multi-part issue is completed by a closing comment.** The gate writes
+  an issue body once and never again, so an edit made on GitHub is never
+  overwritten. The location markers go up in a last comment, and the body
+  carries a `codex-gate-parts` flag that tells the dedup index
+  (`gate_issue_prefetch` in `gate-lib.sh`) to read the markers from that
+  issue's comments. Only comments by the issue's author count, a failed read
+  stops the filing, and an issue closed as completed is not read further.
+- **A closed terminal cannot keep a blocking verdict off the record.** The
+  gate keeps the reviewer's output and writes the blocking marker before it
+  prints anything about either, and its exit and cancellation handlers ignore
+  `SIGPIPE` and record the marker again. A gate whose output pipe closed
+  during the review used to die on its next line, leaving an older approval
+  from the other lane able to ship the artifact.
 - **Reviewer text cannot drive the terminal.** The findings, the summary, the
   coverage limitations, the next steps and the dump of an output that failed
   validation all print through one filter that replaces control characters.

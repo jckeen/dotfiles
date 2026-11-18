@@ -170,12 +170,20 @@ if [ "$1" = api ]; then
       jq -r "$filter" "$CODEX_FAKE_DIR/issues.json" || exit 1
       exit 0 ;;
     */issues/[0-9]*|*/issues)
-      # A read of one issue (no --input): its body as it stands now. A case
-      # writes $CODEX_FAKE_DIR/latest-body to stand in for an edit made on
-      # GitHub after the issue was created.
       case " $* " in *" --input "*) ;; *)
+        # Reads: one issue (its author is gate-bot), or its comments, which a
+        # case supplies as $CODEX_FAKE_DIR/issue-comments.json.
         [ -f "$CODEX_FAKE_DIR/read-fails" ] && exit 1
-        if [ -f "$CODEX_FAKE_DIR/latest-body" ]; then cat "$CODEX_FAKE_DIR/latest-body"; else cat "$CODEX_FAKE_DIR/created-bodies"; fi
+        echo "$2" >> "$CODEX_FAKE_DIR/reads"
+        filter='.'
+        prev=""
+        for a in "$@"; do [ "$prev" = "--jq" ] && filter="$a"; prev="$a"; done
+        case "$2" in
+          */comments\?*)
+            [ -f "$CODEX_FAKE_DIR/issue-comments.json" ] || printf '[]' > "$CODEX_FAKE_DIR/issue-comments.json"
+            jq -r "$filter" "$CODEX_FAKE_DIR/issue-comments.json" || exit 1 ;;
+          *) jq -r "$filter" <<<'{"user":{"login":"gate-bot"}}' || exit 1 ;;
+        esac
         exit 0 ;;
       esac
       # Writes arrive as JSON on stdin (--input -) and are answered with the
@@ -922,6 +930,7 @@ feed_repo() {
 retained() { find "$R/.git/review-receipts/reviews" -name '*.json' 2>/dev/null; }
 # everything the fake GitHub received for an issue: bodies, comments, the patch
 posted() { cat "$CODEX_FAKE_DIR/created-bodies" "$CODEX_FAKE_DIR"/comment-[0-9]* "$CODEX_FAKE_DIR/patched-body" 2>/dev/null; }
+nothing_sent() { [ ! -e "$CODEX_FAKE_DIR/write-count" ]; }
 
 # A finding at the schema's limits: forty places, each path and note at its
 # maximum length. It does not fit one request, so it goes up in parts.
@@ -937,26 +946,70 @@ assert "#788: every one of the forty places is posted" "[ \"\$(posted | grep -o 
 assert "#788: every note is posted whole" "[ \"\$(cat '$CODEX_FAKE_DIR/created-bodies' '$CODEX_FAKE_DIR'/comment-[0-9]* | grep -o '$long_note' | wc -l | tr -d ' ')\" -eq 40 ]"
 assert "#788: the primary range, category as written and confidence are posted" "grep -qF 'code.txt:3-5' '$CODEX_FAKE_DIR/created-bodies' && grep -qF 'Kind Of Nit' '$CODEX_FAKE_DIR/created-bodies' && grep -qF '**Confidence:** 0.4' '$CODEX_FAKE_DIR/created-bodies'"
 assert "#788: a newline in the body arrives as a newline, a backslash as a backslash" "grep -qxF 'first line' '$CODEX_FAKE_DIR/created-bodies' && grep -qxF 'second \\ line' '$CODEX_FAKE_DIR/created-bodies'"
-assert "#788: the location marker is written only once every part is up" "! grep -qF 'codex-gate-loc' '$CODEX_FAKE_DIR/created-bodies' && grep -qF '<!-- codex-gate-loc:acme/widgets:code.txt -->' '$CODEX_FAKE_DIR/patched-body'"
-assert "#788: no request is over the part size" "[ \"\$(for f in '$CODEX_FAKE_DIR/created-bodies' '$CODEX_FAKE_DIR'/comment-[0-9]* '$CODEX_FAKE_DIR/patched-body'; do wc -m < \"\$f\"; done | sort -n | tail -1)\" -le 30000 ]"
+assert "#788: the location marker is written only once every part is up, in the last comment" "! grep -qF 'codex-gate-loc' '$CODEX_FAKE_DIR/created-bodies' '$CODEX_FAKE_DIR/comment-2' && grep -qF '<!-- codex-gate-loc:acme/widgets:code.txt -->' '$CODEX_FAKE_DIR/comment-3'"
+assert "#787: the issue body is written once and never again" "[ ! -e '$CODEX_FAKE_DIR/patches' ] && [ \"\$(wc -l < '$CODEX_FAKE_DIR/create-count' | tr -d ' ')\" -eq 1 ]"
+assert "#787: the body says its markers are in the comments" "grep -qxF '<!-- codex-gate-parts -->' '$CODEX_FAKE_DIR/created-bodies'"
+assert "#788: no request is over the part size" "[ \"\$(for f in '$CODEX_FAKE_DIR/created-bodies' '$CODEX_FAKE_DIR'/comment-[0-9]*; do wc -m < \"\$f\"; done | sort -n | tail -1)\" -le 30000 ]"
 assert "#788: the run output prints every place too" "[ \"\$(grep -c 'also: .*place[0-9]*\\.txt' <<<\"\$CHECK_OUTPUT\")\" -eq 40 ]"
 assert "#788: the closing line says what was delivered" "grep -qF '1 filed, 0 added to an open issue, 0 already accepted, 0 not delivered, 0 not sent' <<<\"\$CHECK_OUTPUT\""
 assert "#788: the review output is kept, byte for byte" "[ -n \"\$(retained)\" ] && cmp -s \"\$(retained)\" '$CODEX_FAKE_DIR/output'"
 rm -rf "$R"
 
-# An edit made on GitHub while the parts upload is kept: the marker is added
-# to the body as it stands, not to the copy the gate sent.
+# The closing comment is the completion record. One that fails leaves the
+# issue unmarked, and the run says so.
 feed_repo
 review_with "$BIG_FINDING"
-printf 'edited by a person while the parts were uploading\n' > "$CODEX_FAKE_DIR/latest-body"
-check "#788: a multi-part issue edited meanwhile is still completed" 0 "✓ filed:" --uncommitted
-assert "#788: the edit survives and the marker is added to it" "grep -qxF 'edited by a person while the parts were uploading' '$CODEX_FAKE_DIR/patched-body' && grep -qF '<!-- codex-gate-loc:acme/widgets:code.txt -->' '$CODEX_FAKE_DIR/patched-body'"
+: > "$CODEX_FAKE_DIR/fail-write-3"
+check "#787: a closing comment that fails leaves the issue unmarked" 0 "could not finish it (2 of 2 part(s) posted, no closing comment)" --uncommitted
+assert "#787: no marker reached GitHub" "! posted | grep -qF 'codex-gate-loc'"
+assert "#787: it is counted as not delivered" "grep -qF '0 filed, 0 added to an open issue, 0 already accepted, 1 not delivered' <<<\"\$CHECK_OUTPUT\""
+rm -rf "$R"
+
+# The dedup index reads that closing comment, from the issue's author only.
+parts_issue() { # <state-json-fields>
+  printf '[{"number":41,%s,"body":"part one of a long finding\\n<!-- codex-gate-parts -->"}]' "$1" > "$CODEX_FAKE_DIR/issues.json"
+}
+closing_comment() { # <login>
+  printf '[{"user":{"login":"%s"},"body":"_All 2 parts are posted._\\n<!-- codex-gate-loc:acme/widgets:code.txt -->"}]' "$1" > "$CODEX_FAKE_DIR/issue-comments.json"
+}
+feed_repo
+low_finding "a nit on a location filed in parts" code.txt
+parts_issue '"state":"open"'
+closing_comment gate-bot
+check "#787: a location completed by a closing comment is tracked" 0 "already tracked as #41; commented" --uncommitted
+assert "#787: nothing new was created for it" "[ ! -e '$CODEX_FAKE_DIR/creates' ]"
 rm -rf "$R"
 feed_repo
-review_with "$BIG_FINDING"
+low_finding "a nit accepted on an issue filed in parts" code.txt
+parts_issue '"state":"closed","state_reason":"not_planned"'
+closing_comment gate-bot
+check "#787: closing that issue as not planned accepts the location" 0 "accepted (#41)" --uncommitted
+assert "#787: an accepted location gets no request" "nothing_sent"
+rm -rf "$R"
+feed_repo
+low_finding "a nit someone else claims is tracked" code.txt
+parts_issue '"state":"open"'
+closing_comment a-stranger
+check "#787: a marker in another account's comment tracks nothing" 0 "✓ filed:" --uncommitted
+assert "#787: the finding was filed as new" "[ \"\$(wc -l < '$CODEX_FAKE_DIR/create-count' | tr -d ' ')\" -eq 1 ]"
+rm -rf "$R"
+feed_repo
+low_finding "a nit on a half-delivered issue" code.txt
+parts_issue '"state":"open"'
+check "#787: an issue filed in parts with no closing comment tracks nothing" 0 "✓ filed:" --uncommitted
+rm -rf "$R"
+feed_repo
+low_finding "a nit on a day the comments cannot be read" code.txt
+parts_issue '"state":"open"'
 : > "$CODEX_FAKE_DIR/read-fails"
-check "#788: an issue whose current body cannot be read is not completed blind" 0 "it carries no location marker" --uncommitted
-assert "#788: no body was written over it" "[ ! -e '$CODEX_FAKE_DIR/patched-body' ]"
+check "#787: comments that cannot be read stop the filing" 0 "could not load existing issues for dedup" --uncommitted
+assert "#787: nothing was filed blind" "nothing_sent"
+rm -rf "$R"
+feed_repo
+low_finding "a nit beside a finished issue" code.txt
+parts_issue '"state":"closed","state_reason":"completed"'
+check "#787: an issue closed as completed is not read further" 0 "✓ filed:" --uncommitted
+assert "#787: its comments were not fetched" "[ ! -e '$CODEX_FAKE_DIR/reads' ]"
 rm -rf "$R"
 
 # A part that fails leaves the issue without its marker, so it is not read as
@@ -964,8 +1017,8 @@ rm -rf "$R"
 feed_repo
 review_with "$BIG_FINDING"
 : > "$CODEX_FAKE_DIR/fail-write-2"
-check "#788: a failed part is reported, not passed off as filed" 0 "only 1 of 2 part(s) were posted" --uncommitted
-assert "#788: the half-delivered issue never gets its location marker" "[ ! -e '$CODEX_FAKE_DIR/patched-body' ] && ! grep -qF 'codex-gate-loc' '$CODEX_FAKE_DIR/created-bodies'"
+check "#788: a failed part is reported, not passed off as filed" 0 "could not finish it (1 of 2 part(s) posted" --uncommitted
+assert "#788: the half-delivered issue never gets its location marker" "! posted | grep -qF 'codex-gate-loc'"
 assert "#788: the closing line counts it as not delivered" "grep -qF '0 filed, 0 added to an open issue, 0 already accepted, 1 not delivered' <<<\"\$CHECK_OUTPUT\""
 assert "#788: the run names where the whole finding is kept" "grep -qF \"kept in \$(retained)\" <<<\"\$CHECK_OUTPUT\""
 rm -rf "$R"
@@ -998,7 +1051,6 @@ faulty() {
   check "$@"
   PATH="$saved"
 }
-nothing_sent() { [ ! -e "$CODEX_FAKE_DIR/write-count" ]; }
 
 feed_repo
 review_with "$BIG_FINDING"
@@ -1008,8 +1060,8 @@ assert "#787: it is counted as not delivered" "grep -qF '0 filed, 0 added to an 
 rm -rf "$R"
 feed_repo
 review_with "$BIG_FINDING"
-faulty cat /part2 "#787: a later part that cannot be read leaves the issue unmarked" 0 "only 1 of 2 part(s) were posted" --uncommitted
-assert "#787: the first part went up alone and no marker followed" "[ \"\$(wc -l < '$CODEX_FAKE_DIR/write-count' | tr -d ' ')\" -eq 1 ] && [ ! -e '$CODEX_FAKE_DIR/patched-body' ] && ! grep -qF 'codex-gate-loc' '$CODEX_FAKE_DIR/created-bodies'"
+faulty cat /part2 "#787: a later part that cannot be read leaves the issue unmarked" 0 "could not finish it (1 of 2 part(s) posted" --uncommitted
+assert "#787: the first part went up alone and no marker followed" "[ \"\$(wc -l < '$CODEX_FAKE_DIR/write-count' | tr -d ' ')\" -eq 1 ] && ! posted | grep -qF 'codex-gate-loc'"
 rm -rf "$R"
 feed_repo
 review_with "$BIG_FINDING"
@@ -2973,6 +3025,77 @@ echo "uncommitted edit" >> "$R/code.txt"
 approve_clean
 check "#787: a working-tree review still passes" 0 "Codex review passed" --uncommitted --no-issues
 assert "#787: a working-tree review names no pinned commit" "! grep -qF 'git show ' '$CODEX_FAKE_DIR/stdin'"
+rm -rf "$R"
+
+# ── a closed terminal cannot keep a blocking verdict off the record ──────
+# (#787 review 8.) The gate's output goes to a FIFO, and the reviewer shim
+# kills the FIFO's reader before it writes its findings: every line the gate
+# prints after the review is a write to a closed pipe. The verdict must be
+# on record all the same, or an older approval from the other lane would
+# still ship the artifact.
+closed_repo() {
+  new_repo
+  git -C "$R" checkout -qb feature
+  echo "committed work" >> "$R/code.txt"
+  git -C "$R" commit -qam "ahead"
+  seed_antigravity_receipt
+  blocking_verdict
+}
+# closed_run <extra hook line> <gate args...> — sets CLOSED_RC.
+closed_run() {
+  local fifo="$CODEX_FAKE_DIR/out.fifo" reader hook="$1"
+  shift
+  mkfifo "$fifo"
+  cat "$fifo" > /dev/null &
+  reader=$!
+  printf 'kill -9 %s 2>/dev/null\nsleep 0.3\n%s\n' "$reader" "$hook" > "$CODEX_FAKE_DIR/mutate"
+  (cd "$R" && env HOME="$TEST_HOME" GATE_PID_FILE="$CODEX_FAKE_DIR/gate-pid" \
+    bash -c 'echo $$ > "$GATE_PID_FILE"; exec "$@"' _ "$GATE" "$@" > "$fifo" 2> "$CODEX_FAKE_DIR/closed.err")
+  CLOSED_RC=$?
+  wait "$reader" 2>/dev/null
+  rm -f "$CODEX_FAKE_DIR/mutate"
+}
+verdict_on_record() { [ "$(block_markers)" -ge 1 ] && ! antigravity_receipt_ships; }
+
+closed_repo
+assert "closed output: the fixture Antigravity approval ships" "antigravity_receipt_ships"
+closed_run "" --committed --require --no-issues
+assert "closed output: a blocking review is not a pass" "[ \"$CLOSED_RC\" -ne 0 ]"
+assert "closed output: the block is recorded and the other lane's approval no longer ships" "verdict_on_record"
+assert "closed output: the review output is still kept" "[ -n \"\$(retained)\" ] && cmp -s \"\$(retained)\" '$CODEX_FAKE_DIR/output'"
+assert "closed output: no Codex receipt was minted" "[ ! -e '$R/.git/review-receipts/codex.json' ]"
+rm -rf "$R"
+
+# The same when the output cannot be retained: the store is a symlink, which
+# the helper refuses.
+closed_repo
+ln -s "$CODEX_FAKE_DIR" "$R/.git/review-receipts/reviews"
+closed_run "" --committed --require --no-issues
+assert "closed output, retention refused: not a pass" "[ \"$CLOSED_RC\" -ne 0 ]"
+assert "closed output, retention refused: the verdict is on record" "verdict_on_record"
+rm -rf "$R"
+
+# A reviewer that fails after writing its findings.
+closed_repo
+echo 1 > "$CODEX_FAKE_DIR/rc"
+closed_run "" --committed --require --no-issues
+assert "closed output, failed reviewer: not a pass" "[ \"$CLOSED_RC\" -ne 0 ]"
+assert "closed output, failed reviewer: the verdict is on record" "verdict_on_record"
+rm -rf "$R"
+
+# Cancelled while the reviewer runs: bash holds the signal until the reviewer
+# returns, by which time its findings are written and the output is closed.
+closed_repo
+closed_run "kill -TERM \"\$(cat '$CODEX_FAKE_DIR/gate-pid')\"" --committed --require --no-issues
+assert "closed output, cancelled: the gate exits with its verdict code" "[ \"$CLOSED_RC\" -eq 2 ]"
+assert "closed output, cancelled: the verdict is on record" "verdict_on_record"
+assert "closed output, cancelled: the review output is still kept" "[ -n \"\$(retained)\" ]"
+rm -rf "$R"
+
+# With the output open, the path is printed, and only after the verdict.
+closed_repo
+check "a blocking review names where its output is kept" 2 "Full review output kept at:" --committed --require --no-issues
+assert "that review's verdict is on record" "verdict_on_record"
 rm -rf "$R"
 
 R="$(mktemp -d)"

@@ -369,7 +369,11 @@ working files on every exit and only an approval stores the output in a
 receipt, so `retain` copies the output, byte for byte, to
 `<git-dir>/review-receipts/reviews/<artifact>.<lane>.<digest>.json` as soon as
 it exists: before the claim, the schema check and every abort path. The gate
-prints the path. The newest records are kept and older ones pruned
+prints the path only after the blocking marker below is written, because a
+write to a closed terminal ends the shell: the Codex gate keeps the output
+and records the marker silently the moment the reviewer returns, and again
+from its exit and cancellation handlers, which ignore `SIGPIPE`. The newest
+records are kept and older ones pruned
 (`RETAINED_REVIEWS` in `review-receipt.py`). A record is evidence only:
 nothing reads it to reach a verdict, clear a marker or accept a receipt.
 

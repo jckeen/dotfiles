@@ -222,17 +222,38 @@ output_may_block() {
 # may first exist: after the reviewer returns, and on the abort and degraded
 # exits that can precede that point. Once per run. When the record cannot be
 # written the output file itself is left in place and named.
-RETAINED_REVIEW="" KEEP_OUTPUT=false
+# It prints nothing. A write to a closed terminal or pipe ends the shell, and
+# this runs before the blocking verdict is recorded: report_retained says
+# where the output went, and is only ever called after record_block.
+RETAINED_REVIEW="" KEEP_OUTPUT=false RETAINED_REPORTED=false
 retain_review() {
   [[ -z "$RETAINED_REVIEW" && "$KEEP_OUTPUT" != true ]] || return 0
   [[ -n "${OUT_FILE:-}" && -s "$OUT_FILE" && -n "${GATE_RUN_DIR:-}" && -f "$GATE_RUN_DIR/snapshot.json" ]] || return 0
-  if RETAINED_REVIEW="$(python3 "$RECEIPT_HELPER" retain --snapshot "$GATE_RUN_DIR/snapshot.json" --output "$OUT_FILE" 2>/dev/null)" \
-    && [[ -n "$RETAINED_REVIEW" ]]; then
-    echo "  Full review output kept at: $RETAINED_REVIEW"
-  else
+  if ! RETAINED_REVIEW="$(python3 "$RECEIPT_HELPER" retain --snapshot "$GATE_RUN_DIR/snapshot.json" --output "$OUT_FILE" 2>/dev/null)" \
+    || [[ -z "$RETAINED_REVIEW" ]]; then
     RETAINED_REVIEW="" KEEP_OUTPUT=true
-    echo "  ⚠ could not retain the review output; leaving it at: $OUT_FILE"
   fi
+}
+report_retained() {
+  [[ "$RETAINED_REPORTED" != true ]] || return 0
+  if [[ -n "$RETAINED_REVIEW" ]]; then
+    RETAINED_REPORTED=true
+    echo "  Full review output kept at: $RETAINED_REVIEW"
+  elif [[ "$KEEP_OUTPUT" == true ]]; then
+    RETAINED_REPORTED=true
+    echo "  ⚠ could not retain the review output; leaving it at: ${OUT_FILE:-}"
+  fi
+}
+# record_block — write the blocking-verdict marker for output that carries, or
+# may carry, blocking findings, and print nothing. The marker is what holds
+# every receipt captured before it, the other lane's included, so it is
+# written before anything that can end the gate: a diagnostic sent to a
+# closed terminal, the claim's own warnings, cleanup. Called the moment the
+# reviewer returns, and again from every exit (finish_review, abort_review).
+record_block() {
+  output_may_block || return 0
+  declare -F gate_block >/dev/null || return 0
+  gate_block >/dev/null 2>&1 || true
 }
 # How a finding is written out (#788). Every field the schema validates is
 # printed, none shortened; the retained output holds the original bytes.
@@ -288,8 +309,12 @@ def for_issue_item:
 abort_review() {
   # Repeated signals must not interrupt receipt invalidation or cleanup. The
   # existing receipt API invalidates the whole lane.
-  trap '' INT TERM HUP QUIT TSTP
+  # Nor may a closed terminal: with PIPE ignored a failed write is an error
+  # status, and with errexit off that status ends nothing here.
+  trap '' INT TERM HUP QUIT TSTP PIPE
+  set +e
   retain_review
+  record_block
   # The status chosen below is deliberate, including a 2: finish_review must
   # not read it as an exit the gate did not choose.
   GATE_EXIT_DECIDED=1
@@ -299,7 +324,6 @@ abort_review() {
   local verdict=3
   if output_may_block && declare -F gate_claim >/dev/null && [[ -n "${GATE_RUN_DIR:-}" ]]; then
     verdict=2
-    gate_block
     # In a subshell: a refused claim exits 2, which is the status kept here,
     # and the invalidation and cleanup below must still run — this may be
     # running inside the EXIT handler, where nothing would follow it.
@@ -308,6 +332,7 @@ abort_review() {
   if ! python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer codex; then
     [[ -z "$GATE_RUN_DIR" ]] || rm -f -- "${GATE_RUN_DIR%/*}/codex.json"
   fi
+  report_retained
   if [[ -n "$ERR_FILE" ]] && declare -F report_diagnostic >/dev/null; then
     report_diagnostic || true
   fi
@@ -344,6 +369,15 @@ cancel_review() {
 # shellcheck disable=SC2329  # invoked by the EXIT trap
 finish_review() {
   local status=$? last_command=$BASH_COMMAND
+  # Whatever ended the run, a closed terminal included, the steps below run
+  # to the end: a failed write is a status, not a signal, and stops nothing.
+  trap '' PIPE
+  set +e
+  # No exit leaves output that may block without its marker. The exits the
+  # gate chose recorded it already; this is for the ones it did not choose
+  # (a signal, or a command that failed) with a status other than 2.
+  retain_review
+  record_block
   if [[ "$status" -eq 2 && "$GATE_EXIT_DECIDED" != 1 ]]; then
     case "$last_command" in
       exit | exit\ *) ;;
@@ -351,7 +385,7 @@ finish_review() {
     esac
   fi
   # No exit that follows a review leaves without its output kept (#788).
-  retain_review || true
+  report_retained
   if declare -F gate_cleanup >/dev/null; then
     gate_cleanup || true
   fi
@@ -417,10 +451,14 @@ fi
 # The static test in codex-review-gate.test.sh holds every post-review exit to it.
 verdict_in_output() {
   retain_review
-  output_may_block || return 0
-  [[ -n "${GATE_RUN_DIR:-}" ]] || return 0
+  record_block
+  if ! output_may_block || [[ -z "${GATE_RUN_DIR:-}" ]]; then
+    report_retained
+    return 0
+  fi
   gate_block
   gate_claim
+  report_retained
   red "  Its output carries, or may carry, blocking findings: a verdict, not a degraded lane (ADR-0008)."
   exit 2
 }
@@ -911,7 +949,9 @@ else
   CODEX_RC=$?
 fi
 set -e
+# Before a single line is printed: keep the output and record its verdict.
 retain_review
+record_block
 
 if [[ "$CODEX_RC" -ne 0 ]]; then
   report_diagnostic
@@ -958,6 +998,7 @@ if output_may_block; then
 fi
 gate_claim
 gate_assert_unchanged
+report_retained
 
 # ─── Parse the structured result ───────────────────────────────
 # Enforce codex-review-schema.json locally before rendering or recording a
@@ -1034,6 +1075,11 @@ publish_stopped() {
 # issue or comment followed by comments, and a new issue gets its footer only
 # once every part is up: the markers are what make a later run treat the
 # location as tracked, and a half-delivered finding must not look tracked.
+# That footer is one more comment, appended. The issue body is never written
+# a second time: GitHub has no conditional update, so rewriting it could
+# discard an edit a person saved in the meantime. The body carries
+# GATE_ISSUE_PARTS_FLAG instead, which tells the dedup index to read the
+# markers from the issue author's comments (gate_issue_prefetch).
 # Returns 0 delivered, 1 nothing posted, 2 partly posted, 3 too large to post.
 # Sets PUBLISHED_URL, PUBLISHED_LABELLED, PUBLISHED_PARTS and PUBLISHED_OF.
 # Every read and every write of finding text is checked on its own: this runs
@@ -1059,7 +1105,8 @@ publish_finding() {
     if [[ "$count" -eq 1 ]]; then
       cat "$part" "$footer" >"$body" || { publish_stopped; return; }
     elif [[ "$i" -eq 1 ]]; then
-      { cat "$part" && printf '\n\n_Part 1 of %s; the rest follows in the comments._\n' "$count"; } >"$body" || { publish_stopped; return; }
+      { cat "$part" && printf '\n\n_Part 1 of %s; the rest follows in the comments._\n' "$count" \
+        && { [[ "$kind" != create ]] || printf '\n%s\n' "$GATE_ISSUE_PARTS_FLAG"; }; } >"$body" || { publish_stopped; return; }
     else
       { printf '_Part %s of %s._\n\n' "$i" "$count" && cat "$part"; } >"$body" || { publish_stopped; return; }
     fi
@@ -1083,15 +1130,9 @@ publish_finding() {
     PUBLISHED_PARTS="$i"
   done
   if [[ "$kind" == create && "$count" -gt 1 ]]; then
-    # The footer is added to the body as it is NOW, not to the copy sent
-    # earlier: the issue has been open to edits for as long as the parts took
-    # to upload, and a checked box or a note written meanwhile must survive.
-    # GitHub offers no conditional update for an issue, so an edit landing
-    # between this read and the write below can still be lost.
-    gh api "repos/$GATE_ISSUE_REPO/issues/${number}" --jq '.body // ""' </dev/null >"$work/latest" 2>/dev/null || return 2
-    cat "$work/latest" "$footer" >"$work/final" || return 2
+    { printf '_All %s parts are posted._\n' "$count" && cat "$footer"; } >"$work/final" || return 2
     payload="$(jq -nc --rawfile body "$work/final" '{body: $body}')" || return 2
-    gate_issue_send "repos/$GATE_ISSUE_REPO/issues/${number}" "$payload" PATCH || return 2
+    gate_issue_send "repos/$GATE_ISSUE_REPO/issues/${number}/comments" "$payload" || return 2
   fi
   return 0
 }
@@ -1292,7 +1333,7 @@ if [[ "$N_LOW" -gt 0 ]]; then
         2)
           # No marker was written, so no later run reads this issue as tracking
           # the location: the finding is filed again, whole, next time.
-          yellow "  ⚠ filed ${PUBLISHED_URL} but only ${PUBLISHED_PARTS} of ${PUBLISHED_OF} part(s) were posted; it carries no location marker, so the next run files this again: $issue_title"
+          yellow "  ⚠ filed ${PUBLISHED_URL} but could not finish it (${PUBLISHED_PARTS} of ${PUBLISHED_OF} part(s) posted, no closing comment); it carries no location marker, so the next run files this again: $issue_title"
           filed=$((filed+1)) n_undelivered=$((n_undelivered + n_items))
           ;;
         3)
