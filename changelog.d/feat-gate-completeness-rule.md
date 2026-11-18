@@ -60,6 +60,12 @@
 - **Reviewer text cannot drive the terminal.** The findings, the summary, the
   coverage limitations, the next steps and the dump of an output that failed
   validation all print through one filter that replaces control characters.
+- **A finding that cannot be read back is not posted.** Every read and render
+  of finding text on the way to GitHub is checked on its own: the file name,
+  the title, the rendered text, each part of a long finding and the location
+  marker. A failure posts nothing further, writes no marker and is counted
+  as not delivered, where a part that could not be read used to go up as a
+  body holding the part notice alone.
 - **Not covered**: output the reviewer never finished writing, a killed
   process or a full disk; the Antigravity gate; the rule that acceptance is
   per file; how many comments repeated runs add to one open issue.

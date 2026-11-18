@@ -970,6 +970,83 @@ assert "#788: the closing line counts it as not delivered" "grep -qF '0 filed, 0
 assert "#788: the run names where the whole finding is kept" "grep -qF \"kept in \$(retained)\" <<<\"\$CHECK_OUTPUT\""
 rm -rf "$R"
 
+# A read or a render that fails is a finding not delivered (#787 review 7).
+# The fault shims stand in front of cat and jq for these cases only: cat fails
+# when an argument ends with the text in $CODEX_FAKE_DIR/fault-cat, jq when
+# its filter does with the text in fault-jq. Everything else runs for real.
+FAULT_DIR="$SHIM_DIR/faults"
+mkdir -p "$FAULT_DIR"
+for tool in cat jq; do
+  real="$(command -v "$tool")"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [ -f "$CODEX_FAKE_DIR/fault-%s" ]; then\n' "$tool"
+    printf '  needle="$(< "$CODEX_FAKE_DIR/fault-%s")"\n' "$tool"
+    printf '  for a in "$@"; do\n'
+    printf '    case "$a" in *"$needle") echo "%s: injected fault" >&2; exit 5 ;; esac\n' "$tool"
+    printf '  done\nfi\n'
+    printf 'exec "%s" "$@"\n' "$real"
+  } > "$FAULT_DIR/$tool"
+  chmod +x "$FAULT_DIR/$tool"
+done
+# faulty <tool> <suffix> <check args...> — one check with that fault armed.
+faulty() {
+  local tool="$1" needle="$2" saved="$PATH"
+  shift 2
+  printf '%s' "$needle" > "$CODEX_FAKE_DIR/fault-$tool"
+  PATH="$FAULT_DIR:$PATH"
+  check "$@"
+  PATH="$saved"
+}
+nothing_sent() { [ ! -e "$CODEX_FAKE_DIR/write-count" ]; }
+
+feed_repo
+review_with "$BIG_FINDING"
+faulty cat /part1 "#787: a first part that cannot be read posts nothing" 0 "could not file issue" --uncommitted
+assert "#787: no request left the gate" "nothing_sent"
+assert "#787: it is counted as not delivered" "grep -qF '0 filed, 0 added to an open issue, 0 already accepted, 1 not delivered' <<<\"\$CHECK_OUTPUT\""
+rm -rf "$R"
+feed_repo
+review_with "$BIG_FINDING"
+faulty cat /part2 "#787: a later part that cannot be read leaves the issue unmarked" 0 "only 1 of 2 part(s) were posted" --uncommitted
+assert "#787: the first part went up alone and no marker followed" "[ \"\$(wc -l < '$CODEX_FAKE_DIR/write-count' | tr -d ' ')\" -eq 1 ] && [ ! -e '$CODEX_FAKE_DIR/patched-body' ] && ! grep -qF 'codex-gate-loc' '$CODEX_FAKE_DIR/created-bodies'"
+rm -rf "$R"
+feed_repo
+review_with "$BIG_FINDING"
+printf '[{"number":41,"state":"open","body":"<!-- codex-gate-loc:acme/widgets:code.txt -->"}]' > "$CODEX_FAKE_DIR/issues.json"
+faulty cat /part1 "#787: a comment whose first part cannot be read is not posted" 0 "could not comment (0 of 2 part(s) posted)" --uncommitted
+assert "#787: no comment left the gate" "nothing_sent"
+rm -rf "$R"
+feed_repo
+low_finding "a nit that will not render" code.txt
+faulty jq '| for_issue' "#787: a finding that cannot be rendered is not filed" 0 "could not render the finding text" --uncommitted
+assert "#787: no issue was created without its text" "nothing_sent"
+assert "#787: the unrendered finding is counted as not delivered" "grep -qF '0 filed, 0 added to an open issue, 0 already accepted, 1 not delivered, 0 not sent' <<<\"\$CHECK_OUTPUT\""
+rm -rf "$R"
+feed_repo
+low_finding "a tracked nit that will not render" code.txt
+printf '[{"number":41,"state":"open","body":"<!-- codex-gate-loc:acme/widgets:code.txt -->"}]' > "$CODEX_FAKE_DIR/issues.json"
+faulty jq '| for_issue' "#787: a comment that cannot be rendered is not posted" 0 "the finding could not be rendered" --uncommitted
+assert "#787: no comment went up with the heading alone" "nothing_sent"
+rm -rf "$R"
+feed_repo
+low_finding "a nit whose file cannot be read back" code.txt
+faulty jq '.file + "."' "#787: a finding whose file name cannot be read is not filed" 0 "could not read finding 1 back" --uncommitted
+assert "#787: nothing was filed under an empty location" "nothing_sent"
+assert "#787: the unread finding is counted as not delivered" "grep -qF '1 not delivered, 0 not sent' <<<\"\$CHECK_OUTPUT\""
+rm -rf "$R"
+feed_repo
+grouped_output
+faulty jq '| for_issue_item' "#787: a group with an item that cannot be rendered is not filed" 0 "could not render the finding text" --uncommitted
+assert "#787: only the lone finding was created" "[ \"\$(wc -l < '$CODEX_FAKE_DIR/create-count' | tr -d ' ')\" -eq 1 ] && grep -qF 'title=codex review: a lone nit' '$CODEX_FAKE_DIR/creates'"
+assert "#787: the four grouped findings are counted once each" "grep -qF '1 filed, 0 added to an open issue, 0 already accepted, 4 not delivered, 0 not sent' <<<\"\$CHECK_OUTPUT\""
+rm -rf "$R"
+feed_repo
+low_finding "a nit on a day the list fails" code.txt
+faulty jq 'end)] | @tsv' "#787: findings that cannot be listed are all counted as not sent" 0 "could not list the low findings" --uncommitted
+assert "#787: none was filed and one is not sent" "nothing_sent && grep -qF '0 not delivered, 1 not sent' <<<\"\$CHECK_OUTPUT\""
+rm -rf "$R"
+
 # The same finding on an already tracked location goes up as comments, whole.
 feed_repo
 review_with "$BIG_FINDING"

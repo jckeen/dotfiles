@@ -1008,15 +1008,24 @@ n_filed=0 n_commented=0 n_accepted=0 n_undelivered=0 n_unpublished=0
 # finding_heading <index> — the finding's title as one bounded line, for an
 # issue title or a log line. The whole title is in the rendered finding.
 finding_heading() {
-  jq -r --argjson i "$1" '.findings[$i].title | gsub("\\p{Cc}"; " ") | .[0:200]' "$OUT_FILE"
+  jq -er --argjson i "$1" '.findings[$i].title | strings | gsub("\\p{Cc}"; " ") | .[0:200]' "$OUT_FILE"
 }
 
 # finding_file <index> — set FINDING_FILE to the finding's file name exactly
 # as the reviewer wrote it. The sentinel keeps a trailing newline that a
-# command substitution would drop.
+# command substitution would drop, and its absence is a failed read: an empty
+# name would otherwise be looked up, and marked, as a location of its own.
 finding_file() {
-  FINDING_FILE="$(jq -j --argjson i "$1" '.findings[$i].file + "."' "$OUT_FILE")"
+  FINDING_FILE="$(jq -j --argjson i "$1" '.findings[$i].file + "."' "$OUT_FILE")" || return 1
+  [[ "$FINDING_FILE" == ?*. ]] || return 1
   FINDING_FILE="${FINDING_FILE%.}"
+}
+
+# publish_stopped — the status publish_finding returns when a step fails:
+# 1 while nothing has reached GitHub, 2 once anything has.
+publish_stopped() {
+  [[ "$PUBLISHED_PARTS" -eq 0 && -z "$PUBLISHED_URL" ]] && return 1
+  return 2
 }
 
 # publish_finding create|comment <issue-number> <title> <text-file> <footer-file>
@@ -1027,27 +1036,35 @@ finding_file() {
 # location as tracked, and a half-delivered finding must not look tracked.
 # Returns 0 delivered, 1 nothing posted, 2 partly posted, 3 too large to post.
 # Sets PUBLISHED_URL, PUBLISHED_LABELLED, PUBLISHED_PARTS and PUBLISHED_OF.
+# Every read and every write of finding text is checked on its own: this runs
+# with errexit off (its caller tests the status), and in a command group only
+# the last command's status would otherwise count, so a part that could not
+# be read would go up as a body holding the part notice alone.
 publish_finding() {
   local kind="$1" number="$2" title="$3" text="$4" footer="$5"
-  local work budget count payload part body i
+  local work budget count payload part body i footer_chars
   PUBLISHED_URL="" PUBLISHED_LABELLED=true PUBLISHED_PARTS=0 PUBLISHED_OF=0
   work="$(mktemp -d "$GATE_RUN_DIR/publish.XXXXXX")" || return 1
-  budget=$((ISSUE_PART_CHARS - $(wc -m <"$footer") - 200))
+  footer_chars="$(wc -m <"$footer")" || return 1
+  [[ "$footer_chars" =~ ^[[:space:]]*([0-9]+)[[:space:]]*$ ]] || return 1
+  budget=$((ISSUE_PART_CHARS - BASH_REMATCH[1] - 200))
+  [[ -s "$text" ]] || return 1
   [[ "$budget" -ge 1000 ]] || return 3
   count="$(gate_split_text "$text" "$budget" "$work/part")" || return 1
   [[ "$count" -ge 1 && "$count" -le "$ISSUE_MAX_PARTS" ]] || return 3
   PUBLISHED_OF="$count"
   for ((i = 1; i <= count; i++)); do
     part="$work/part$i" body="$work/body$i"
+    [[ -s "$part" ]] || { publish_stopped; return; }
     if [[ "$count" -eq 1 ]]; then
-      cat "$part" "$footer" >"$body" || return 1
+      cat "$part" "$footer" >"$body" || { publish_stopped; return; }
     elif [[ "$i" -eq 1 ]]; then
-      { cat "$part"; printf '\n\n_Part 1 of %s; the rest follows in the comments._\n' "$count"; } >"$body" || return 1
+      { cat "$part" && printf '\n\n_Part 1 of %s; the rest follows in the comments._\n' "$count"; } >"$body" || { publish_stopped; return; }
     else
-      { printf '_Part %s of %s._\n\n' "$i" "$count"; cat "$part"; } >"$body" || return 1
+      { printf '_Part %s of %s._\n\n' "$i" "$count" && cat "$part"; } >"$body" || { publish_stopped; return; }
     fi
     if [[ "$kind" == create && "$i" -eq 1 ]]; then
-      payload="$(jq -nc --rawfile body "$body" --arg title "$title" '{title: $title, body: $body, labels: ["codex-review"]}')" || return 1
+      payload="$(jq -nc --rawfile body "$body" --arg title "$title" '{title: $title, body: $body, labels: ["codex-review"]}')" || { publish_stopped; return; }
       if ! gate_issue_send "repos/$GATE_ISSUE_REPO/issues" "$payload"; then
         # Retried without the label only when GitHub said the label was the
         # problem. After any other failure the issue may already exist.
@@ -1060,8 +1077,8 @@ publish_finding() {
       number="${GATE_SENT_URL##*/}"
       [[ "$number" =~ ^[0-9]+$ ]] || return 2
     else
-      payload="$(jq -nc --rawfile body "$body" '{body: $body}')" || { [[ "$i" -eq 1 ]] && return 1; return 2; }
-      gate_issue_send "repos/$GATE_ISSUE_REPO/issues/${number}/comments" "$payload" || { [[ "$i" -eq 1 ]] && return 1; return 2; }
+      payload="$(jq -nc --rawfile body "$body" '{body: $body}')" || { publish_stopped; return; }
+      gate_issue_send "repos/$GATE_ISSUE_REPO/issues/${number}/comments" "$payload" || { publish_stopped; return; }
     fi
     PUBLISHED_PARTS="$i"
   done
@@ -1114,12 +1131,18 @@ if [[ "$N_LOW" -gt 0 ]]; then
     low_rows="$(jq -r '.findings | to_entries[] | select(.value.severity == "low")
       | [(.key | tostring),
          (.value.category | ascii_downcase | gsub("[^a-z0-9]+"; "-") | sub("^-"; "") | .[0:40] | sub("-$"; "")
-          | if . == "" then "uncategorized" else . end)] | @tsv' "$OUT_FILE")"
+          | if . == "" then "uncategorized" else . end)] | @tsv' "$OUT_FILE")" || {
+      # No rows means no finding is handled below: all are counted as not sent.
+      yellow "  ⚠ could not list the low findings from the review output; none filed"
+      low_rows=""
+    }
     # Pass 1: which categories have new findings in two or more distinct files.
     new_cats=() new_files=() group_cats=() done_pairs=()
     while IFS=$'\t' read -r index category; do
       [[ -z "$index" ]] && continue
-      finding_file "$index"; file="$FINDING_FILE"
+      # A finding whose file name cannot be read is reported in the pass below.
+      finding_file "$index" || continue
+      file="$FINDING_FILE"
       read -r match number <<<"$(gate_issue_lookup "$file")"
       [[ "$match" == "none" ]] || continue
       seen=false
@@ -1134,7 +1157,15 @@ if [[ "$N_LOW" -gt 0 ]]; then
     done <<<"$low_rows"
     while IFS=$'\t' read -r index category; do
       [[ -z "$index" ]] && continue
-      finding_file "$index"; file="$FINDING_FILE"
+      # A finding that cannot be read back out of the review is not posted in
+      # part and not marked as tracked: it is counted as not delivered. The
+      # same holds for every render below (render_ok).
+      if ! finding_file "$index" || ! title="$(finding_heading "$index")"; then
+        yellow "  ⚠ could not read finding $((index + 1)) back from the review output; not filed"
+        handled=$((handled + 1)) n_undelivered=$((n_undelivered + 1))
+        continue
+      fi
+      file="$FINDING_FILE"
       # A finding already filed with its group in this run needs nothing more:
       # without this it would comment "seen again" on the issue that lists it.
       skip=false
@@ -1146,7 +1177,6 @@ if [[ "$N_LOW" -gt 0 ]]; then
         yellow "  (reached MAX_ISSUES=$MAX_ISSUES; remaining not filed)"
         break
       fi
-      title="$(finding_heading "$index")"
       issue_title="codex review: ${title}"
       # Dedupe by LOCATION (file), not title — Codex rewords titles every run.
       # gate_issue_lookup reads the index prefetched above; see gate-lib.sh.
@@ -1161,11 +1191,16 @@ if [[ "$N_LOW" -gt 0 ]]; then
             echo "  [dry-run] would comment on #${number}: $comment_head"
             n_unpublished=$((n_unpublished + 1))
           else
-            { printf '%s\n\n' "$comment_head"
-              jq -r --argjson i "$index" "$FINDING_JQ"'.findings[$i] | for_issue' "$OUT_FILE"; } >"$text_file"
-            : >"$footer_file"
-            rc=0; publish_finding comment "$number" "" "$text_file" "$footer_file" || rc=$?
-            if [[ "$rc" -eq 0 ]]; then
+            rc=4
+            if { printf '%s\n\n' "$comment_head" \
+              && jq -r --argjson i "$index" "$FINDING_JQ"'.findings[$i] | for_issue' "$OUT_FILE"; } >"$text_file" \
+              && : >"$footer_file"; then
+              rc=0; publish_finding comment "$number" "" "$text_file" "$footer_file" || rc=$?
+            fi
+            if [[ "$rc" -eq 4 ]]; then
+              yellow "  ⚠ already tracked as #${number} but the finding could not be rendered; nothing was posted: $issue_title"
+              n_undelivered=$((n_undelivered + 1))
+            elif [[ "$rc" -eq 0 ]]; then
               echo "  ↷ already tracked as #${number}; commented: $comment_head"
               n_commented=$((n_commented + 1))
             else
@@ -1181,7 +1216,15 @@ if [[ "$N_LOW" -gt 0 ]]; then
           handled=$((handled + 1)) n_accepted=$((n_accepted + 1))
           continue
           ;;
+        none) ;;
+        *)
+          # No answer from the lookup is not "nothing tracks this location".
+          yellow "  ⚠ could not look up existing issues for this location; not filed: $issue_title"
+          handled=$((handled + 1)) n_undelivered=$((n_undelivered + 1))
+          continue
+          ;;
       esac
+      render_ok=true
       grouped=false
       for g in ${group_cats[@]+"${group_cats[@]}"}; do [[ "$g" == "$category" ]] && grouped=true; done
       group_files=()
@@ -1190,34 +1233,45 @@ if [[ "$N_LOW" -gt 0 ]]; then
         # Every new finding of this category goes into one issue, in the
         # reviewer's order; each distinct file gets its own marker.
         markers="" n_items=0
-        : >"$text_file.items"
+        : >"$text_file.items" || render_ok=false
         while IFS=$'\t' read -r g_index g_cat; do
           [[ "$g_cat" == "$category" && -n "$g_index" ]] || continue
-          finding_file "$g_index"; g_file="$FINDING_FILE"
+          # Unreadable here is unreadable in the outer loop, which reports it.
+          finding_file "$g_index" || continue
+          g_file="$FINDING_FILE"
           read -r g_match _ <<<"$(gate_issue_lookup "$g_file")"
           [[ "$g_match" == "none" ]] || continue
           n_items=$((n_items + 1))
-          jq -r --argjson i "$g_index" "$FINDING_JQ"'.findings[$i] | for_issue_item' "$OUT_FILE" >>"$text_file.items"
+          jq -r --argjson i "$g_index" "$FINDING_JQ"'.findings[$i] | for_issue_item' "$OUT_FILE" >>"$text_file.items" || render_ok=false
           known=false
           for f in ${group_files[@]+"${group_files[@]}"}; do [[ "$f" == "$g_file" ]] && known=true; done
-          [[ "$known" == true ]] || { group_files+=("$g_file"); markers+="$(gate_issue_marker "$g_file")
-"; }
+          if [[ "$known" != true ]]; then
+            group_files+=("$g_file")
+            marker="$(gate_issue_marker "$g_file")" && [[ -n "$marker" ]] || render_ok=false
+            markers+="$marker"$'\n'
+          fi
         done <<<"$low_rows"
         issue_title="codex review: ${category} (${#group_files[@]} files)"
         # shellcheck disable=SC2016  # Markdown code spans, not expansions.
         { printf 'Filed automatically by codex-review-gate: %s low-severity Codex findings of one kind (`%s`) across %s files.\n\n**Branch:** `%s`\n\n' \
-            "$n_items" "$category" "${#group_files[@]}" "$branch"
-          cat "$text_file.items"; } >"$text_file"
-        printf '\nClose as *not planned* to accept these findings: the gate then stops re-filing them for every file listed.\n\n%s' "$markers" >"$footer_file"
+            "$n_items" "$category" "${#group_files[@]}" "$branch" \
+          && cat "$text_file.items"; } >"$text_file" || render_ok=false
+        printf '\nClose as *not planned* to accept these findings: the gate then stops re-filing them for every file listed.\n\n%s' "$markers" >"$footer_file" || render_ok=false
         for f in "${group_files[@]}"; do done_pairs+=("$category"$'\t'"$f"); done
       else
         group_files=("$file")
         # shellcheck disable=SC2016  # Markdown code spans, not expansions.
-        { printf 'Filed automatically by codex-review-gate (low-severity Codex finding).\n\n**Branch:** `%s`\n' "$branch"
-          jq -r --argjson i "$index" "$FINDING_JQ"'.findings[$i] | for_issue' "$OUT_FILE"; } >"$text_file"
-        printf '\nClose as *not planned* to accept this finding: the gate then stops re-filing it for this file.\n\n%s\n' "$(gate_issue_marker "$file")" >"$footer_file"
+        { printf 'Filed automatically by codex-review-gate (low-severity Codex finding).\n\n**Branch:** `%s`\n' "$branch" \
+          && jq -r --argjson i "$index" "$FINDING_JQ"'.findings[$i] | for_issue' "$OUT_FILE"; } >"$text_file" || render_ok=false
+        marker="$(gate_issue_marker "$file")" && [[ -n "$marker" ]] || render_ok=false
+        printf '\nClose as *not planned* to accept this finding: the gate then stops re-filing it for this file.\n\n%s\n' "$marker" >"$footer_file" || render_ok=false
       fi
       handled=$((handled + n_items))
+      if [[ "$render_ok" != true ]]; then
+        yellow "  ⚠ could not render the finding text; nothing was posted: $issue_title"
+        n_undelivered=$((n_undelivered + n_items))
+        continue
+      fi
       # File via REST (POST repos/{owner}/{repo}/issues), the same transport
       # as the prefetch and as harvest-codex-comments.sh: `gh issue create`
       # is GraphQL-backed, which egress-restricted sandboxes block, and it
