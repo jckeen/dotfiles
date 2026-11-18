@@ -1070,7 +1070,9 @@ publish_stopped() {
 }
 
 # publish_finding create|comment <issue-number> <title> <text-file> <footer-file>
-# Posts <text-file> whole. One part is one request, with the footer (the
+# Posts <text-file> whole, with every HTML comment delimiter in it escaped
+# (the finding renderer has escaped the reviewer's fields already; this is the
+# one place every caller's text passes). One part is one request, with the footer (the
 # accept instruction and the location markers) at its end. More parts are an
 # issue or comment followed by comments, and a new issue gets its footer only
 # once every part is up: the markers are what make a later run treat the
@@ -1095,6 +1097,15 @@ publish_finding() {
   [[ "$footer_chars" =~ ^[[:space:]]*([0-9]+)[[:space:]]*$ ]] || return 1
   budget=$((ISSUE_PART_CHARS - BASH_REMATCH[1] - 200))
   [[ -s "$text" ]] || return 1
+  # Only the footer and the parts flag, which the gate writes itself, may
+  # hold a literal HTML comment. The text is everything else a caller put
+  # together (a heading with the reviewer's title, the branch name, the
+  # rendered finding), and whatever it holds, no part of it can open or
+  # close a comment once it has been through here: a marker is a comment,
+  # and the index reads markers from bodies and from comments alike.
+  sed -e 's/<!--/\&lt;!--/g' -e 's/-->/--\&gt;/g' "$text" >"$work/text" || return 1
+  [[ -s "$work/text" ]] || return 1
+  text="$work/text"
   [[ "$budget" -ge 1000 ]] || return 3
   count="$(gate_split_text "$text" "$budget" "$work/part")" || return 1
   [[ "$count" -ge 1 && "$count" -le "$ISSUE_MAX_PARTS" ]] || return 3

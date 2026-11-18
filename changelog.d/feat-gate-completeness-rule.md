@@ -61,6 +61,10 @@
   (`gate_issue_prefetch` in `gate-lib.sh`) to read the markers from that
   issue's comments. Only comments by the issue's author count, a failed read
   stops the filing, and an issue closed as completed is not read further.
+- **Issue text cannot hold a marker.** Everything the gate posts except its
+  own footer and parts flag has its HTML comment delimiters escaped at the
+  one place all of it passes, so a reviewer's title in a comment heading, or
+  a branch name, cannot write a location marker.
 - **A closed terminal cannot keep a blocking verdict off the record.** The
   gate keeps the reviewer's output and writes the blocking marker before it
   prints anything about either, and its exit and cancellation handlers ignore
