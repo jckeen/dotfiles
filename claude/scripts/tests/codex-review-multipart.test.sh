@@ -82,7 +82,7 @@ else:
  assert 'Claim to disprove: Complete fixture claim' in data
  assert 'Reproduction command: inspect all fixture lines' in data
  (capture/'complete-request').write_text(data)
- result={'verdict':'approve','summary':'fixture','findings':[],'next_steps':[]}
+ result={'verdict':'approve','summary':'fixture','findings':[],'next_steps':[],'coverage':{'status':'complete','examined':['fixture'],'limitations':[]}}
 if mode!='no-result': Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps(result))
 PY
 chmod +x "$FIXTURE/bin/codex"

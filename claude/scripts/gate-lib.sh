@@ -488,18 +488,50 @@ GATE_ISSUE_INDEX=""
 GATE_ISSUE_NO_REASON="-"
 
 # gate_issue_marker <file> — the exact marker text for a location.
+# Two formats, told apart by their name, so neither can be read as the other:
+#   codex-gate-loc:   the file name as written. Used, as it always has been,
+#                     for a name with no `%`, `<`, `>`, backslash or control
+#                     character: for such a name it is already unambiguous,
+#                     and issues filed before the second format keep matching.
+#   codex-gate-loc2:  every other name, with those characters percent-encoded.
+#                     The name can then neither end the comment nor spell a
+#                     second marker inside it, no two names share a marker,
+#                     and nothing in it is rewritten by the index's @tsv.
+# A name that needs the second format is never looked up in the first: what
+# the first format wrote for such names (characters dropped, backslashes
+# doubled by the row it once passed through) cannot be told from another
+# file's marker, so an issue filed that way is filed once more instead.
+# shellcheck disable=SC2034  # Also read by the sourcing gate.
+GATE_ISSUE_PARTS_FLAG='<!-- codex-gate-parts -->'
 gate_issue_marker() {
-  # The marker is an HTML comment; strip control characters and the closing
-  # sequence so a reviewer-supplied path cannot terminate it early.
-  local file
-  file="$(printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/-->//g')"
-  printf '<!-- codex-gate-loc:%s:%s -->' "$GATE_ISSUE_REPO" "$file"
+  # A marker is a persisted key, written by one run and matched by another,
+  # so it is derived from the name's bytes: under the C locale bash walks
+  # bytes and `[:cntrl:]` is the ASCII control set, whatever locale the gate
+  # was started in. A name that is not ASCII keeps its bytes as they are.
+  local LC_ALL=C
+  local file="$1" encoded="" char i
+  if [[ "$file" != *[%\<\>\\[:cntrl:]]* ]]; then
+    printf '<!-- codex-gate-loc:%s:%s -->' "$GATE_ISSUE_REPO" "$file"
+    return 0
+  fi
+  for ((i = 0; i < ${#file}; i++)); do
+    char="${file:i:1}"
+    case "$char" in
+      %) char=%25 ;;
+      \<) char=%3C ;;
+      \>) char=%3E ;;
+      \\) char=%5C ;;
+      [[:cntrl:]]) printf -v char '%%%02X' "'$char" ;;
+    esac
+    encoded+="$char"
+  done
+  printf '<!-- codex-gate-loc2:%s:%s -->' "$GATE_ISSUE_REPO" "$encoded"
 }
 
 # gate_issue_index_marker <file> — the marker as it appears in GATE_ISSUE_INDEX.
 # The index is jq @tsv output, which doubles backslashes (and encodes tab, LF
-# and CR as \t \n \r, none of which survive gate_issue_marker's control-byte
-# strip), and `read -r` keeps those escapes literal. Lookups and in-run records
+# and CR as \t \n \r, none of which gate_issue_marker leaves in a marker),
+# and `read -r` keeps those escapes literal. Lookups and in-run records
 # must use this form or a path containing a backslash never matches: its open
 # issue would be refiled every run and a not-planned closure would not suppress.
 gate_issue_index_marker() {
@@ -541,6 +573,7 @@ gate_repo_slug() {
 # unavailable; a caller that files anyway files blind, which is the duplicate
 # noise this exists to stop.
 gate_issue_prefetch() {
+  local num state reason body author line extra
   if [[ -n "${1:-}" ]]; then
     GATE_ISSUE_REPO="$1"
   else
@@ -559,6 +592,25 @@ gate_issue_prefetch() {
     gh api "repos/$GATE_ISSUE_REPO/issues?state=all&per_page=100" --paginate \
     --jq '.[] | select(.pull_request == null)
           | [(.number|tostring), .state, (.state_reason // env.GATE_ISSUE_NO_REASON), (.body // "")] | @tsv' 2>/dev/null)" || return 1
+  # An issue filed in parts keeps its location markers in a closing comment
+  # (publish_finding in codex-review-gate.sh), so its comments join the index
+  # as further rows for the same issue. Only the issue author's: anyone may
+  # comment on a public issue, and a marker is what makes a location read as
+  # tracked or accepted. A read that fails fails the prefetch, so the caller
+  # files nothing rather than filing blind. Issues closed as completed are
+  # skipped: gate_issue_lookup never matches them.
+  while IFS=$'\t' read -r num state reason body; do
+    [[ -n "$num" && "$body" == *"$GATE_ISSUE_PARTS_FLAG"* ]] || continue
+    [[ "$state" == open || "$reason" == not_planned ]] || continue
+    author="$(gh api "repos/$GATE_ISSUE_REPO/issues/$num" --jq '.user.login // ""' 2>/dev/null)" || return 1
+    [[ -n "$author" ]] || return 1
+    extra="$(GATE_ISSUE_AUTHOR="$author" \
+      gh api "repos/$GATE_ISSUE_REPO/issues/$num/comments?per_page=100" --paginate \
+      --jq '.[] | select(.user.login == env.GATE_ISSUE_AUTHOR) | [(.body // "")] | @tsv' 2>/dev/null)" || return 1
+    while IFS= read -r line; do
+      [[ -z "$line" ]] || GATE_ISSUE_INDEX+=$'\n'"$num"$'\t'"$state"$'\t'"$reason"$'\t'"$line"
+    done <<<"$extra"
+  done <<<"$GATE_ISSUE_INDEX"
   return 0
 }
 
@@ -592,6 +644,83 @@ gate_issue_lookup() {
 # a second finding at the same location in this run comments instead of filing.
 gate_issue_remember() {
   GATE_ISSUE_INDEX+=$'\n'"$1"$'\t'"open"$'\t'"$GATE_ISSUE_NO_REASON"$'\t'"$(gate_issue_index_marker "$2")"
+}
+
+# gate_text_chars <file> — print the file's length in characters, counted as
+# gate_split_text counts them (UTF-8 code points), not as `wc -m` does, whose
+# answer follows the locale and is a byte count under C.
+gate_text_chars() {
+  python3 - "$1" <<'PYCHARS'
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="surrogateescape", newline="") as stream:
+    print(len(stream.read()))
+PYCHARS
+}
+
+# gate_split_text <file> <limit> <prefix> — write <file> as <prefix>1..N, each
+# at most <limit> characters, and print N. Parts end at line ends; only a line
+# longer than the limit is cut inside. Nothing is added or dropped: the parts
+# in order are the file.
+gate_split_text() {
+  python3 - "$1" "$2" "$3" <<'PYSPLIT'
+import sys
+
+path, limit, prefix = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+if limit < 1:
+    raise SystemExit("split limit must be positive")
+with open(path, encoding="utf-8", errors="surrogateescape", newline="") as stream:
+    text = stream.read()
+parts, current = [], ""
+for line in text.splitlines(keepends=True):
+    while len(line) > limit:
+        if current:
+            parts.append(current)
+            current = ""
+        parts.append(line[:limit])
+        line = line[limit:]
+    if len(current) + len(line) > limit:
+        parts.append(current)
+        current = ""
+    current += line
+if current:
+    parts.append(current)
+for number, part in enumerate(parts, 1):
+    with open(prefix + str(number), "w", encoding="utf-8", errors="surrogateescape", newline="") as stream:
+        stream.write(part)
+print(len(parts))
+PYSPLIT
+}
+
+# gate_issue_send <endpoint> <json> [<method>] — one REST write, the request
+# on stdin: a body passed as an argument fails outright past the kernel's cap
+# on a single argument. Returns 0 and sets GATE_SENT_URL (the html_url GitHub
+# answered with) on success. On failure GATE_SENT_LABEL_REJECTED is true only
+# for an HTTP 422 whose every error is a label validation error: the one
+# failure that proves nothing was created, so the one a caller may retry
+# without the label. Any other failure may follow a write that succeeded.
+gate_issue_send() {
+  local status=0 response answer
+  GATE_SENT_URL="" GATE_SENT_LABEL_REJECTED=false
+  response="$(gh api "$1" ${3:+--method "$3"} --input - --include <<<"$2" 2>/dev/null)" || status=$?
+  answer="$(sed '1,/^[[:space:]]*$/d' <<<"$response")"
+  if [[ "$status" -eq 0 ]]; then
+    GATE_SENT_URL="$(jq -er '.html_url | select(type == "string" and length > 0)' <<<"$answer" 2>/dev/null)" || GATE_SENT_URL=""
+    [[ -n "$GATE_SENT_URL" ]]
+    return
+  fi
+  if [[ "$response" =~ ^HTTP/[0-9.]+[[:space:]]422[[:space:]] ]] \
+    && jq -e '
+      (.errors | type == "array" and length > 0) and
+      all(.errors[];
+        ((.resource == "Issue" and .field == "labels") or
+         (.resource == "Label" and .field == "name")) and
+        (.code == "invalid" or .code == "missing" or .code == "missing_field"))
+    ' <<<"$answer" >/dev/null 2>&1; then
+    # shellcheck disable=SC2034  # Read by the sourcing gate.
+    GATE_SENT_LABEL_REJECTED=true
+  fi
+  return 1
 }
 
 # ─── .codex-review-ignore ──────────────────────────────────────

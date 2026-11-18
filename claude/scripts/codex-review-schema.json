@@ -6,7 +6,8 @@
     "verdict",
     "summary",
     "findings",
-    "next_steps"
+    "next_steps",
+    "coverage"
   ],
   "properties": {
     "verdict": {
@@ -34,7 +35,8 @@
           "line_start",
           "line_end",
           "confidence",
-          "recommendation"
+          "recommendation",
+          "supporting_locations"
         ],
         "properties": {
           "severity": {
@@ -77,6 +79,42 @@
           },
           "recommendation": {
             "type": "string"
+          },
+          "supporting_locations": {
+            "type": "array",
+            "maxItems": 40,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "file",
+                "line_start",
+                "line_end",
+                "note"
+              ],
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400,
+                  "description": "Path relative to the repository root: no leading slash, no '..' segment, no control characters."
+                },
+                "line_start": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "line_end": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Not less than line_start."
+                },
+                "note": {
+                  "type": "string",
+                  "maxLength": 600
+                }
+              }
+            },
+            "description": "Other places that are evidence for this finding. At most 40."
           }
         }
       }
@@ -86,6 +124,45 @@
       "items": {
         "type": "string",
         "minLength": 1
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "examined",
+        "limitations"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "incomplete"
+          ],
+          "description": "complete only when limitations is empty and examined names at least one area."
+        },
+        "examined": {
+          "type": "array",
+          "maxItems": 60,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "description": "The contracts and paths mapped and checked. At least one for a complete review."
+        },
+        "limitations": {
+          "type": "array",
+          "maxItems": 60,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "description": "Every part of the changes, or of the paths that depend on them, that was not examined. Empty for a complete review."
+        }
       }
     }
   }

@@ -3192,6 +3192,59 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         self.block(snapshot, ok=False)
         self.assertEqual(list(elsewhere.iterdir()), [])
 
+    def retain(self, snapshot, output, ok=True):
+        return self.run_helper(
+            "retain", "--snapshot", str(snapshot), "--output", str(output), ok=ok
+        )
+
+    def test_retain_keeps_the_output_bytes(self):
+        """The record is the reviewer's output exactly, bytes no text decoder accepts included (#788)."""
+        output = Path(self.tmp.name) / "review.json"
+        output.write_bytes(b'{"note":"a\x00b\xff"}\n\n')
+        snapshot = self.capture(reviewer="codex")
+        kept = Path(self.retain(snapshot, output))
+        self.assertEqual(kept.parent, self.receipts_dir() / "reviews")
+        self.assertEqual(kept.read_bytes(), output.read_bytes())
+        self.assertEqual(kept.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.retain(snapshot, output), str(kept))
+        self.assertEqual(len(list(kept.parent.glob("*.json"))), 1)
+
+    def test_retain_is_bounded_and_keeps_the_newest(self):
+        output = Path(self.tmp.name) / "review.json"
+        snapshot = self.capture(reviewer="codex")
+        paths = []
+        for number in range(33):
+            output.write_text(f"review {number}")
+            paths.append(Path(self.retain(snapshot, output)))
+            os.utime(paths[-1], ns=(number * 10**9, number * 10**9))
+        kept = set((self.receipts_dir() / "reviews").glob("*.json"))
+        self.assertEqual(len(kept), 30)
+        self.assertIn(paths[-1], kept)
+        self.assertNotIn(paths[0], kept)
+
+    def test_retain_is_evidence_only(self):
+        """A retained review neither approves nor blocks anything."""
+        output = Path(self.tmp.name) / "review.json"
+        output.write_text('{"verdict":"approve","findings":[]}')
+        self.retain(self.capture(reviewer="codex"), output)
+        self.check(False)
+        snapshot = self.begin(reviewer="codex")
+        self.retain(snapshot, output)
+        self.complete(snapshot)
+        self.check()
+
+    def test_retain_refuses_an_empty_output_and_a_symlinked_store(self):
+        output = Path(self.tmp.name) / "review.json"
+        output.write_text("")
+        snapshot = self.capture(reviewer="codex")
+        self.retain(snapshot, output, ok=False)
+        output.write_text("review")
+        elsewhere = Path(self.tmp.name) / "elsewhere"
+        elsewhere.mkdir()
+        (self.receipts_dir() / "reviews").symlink_to(elsewhere)
+        self.retain(snapshot, output, ok=False)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
     def test_check_refuses_when_a_block_lands_after_its_validation(self):
         """The marker is read under the lock, in check's deciding assertion."""
         spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)

@@ -364,6 +364,19 @@ takes the lock only for its deciding assertion — the attempt still live and th
 receipt still the one it validated — so a claim landing after its validation
 makes it refuse instead of approving a retired receipt (#533).
 
+**The reviewer's output outlives the run (#788).** The Codex gate deletes its
+working files on every exit and only an approval stores the output in a
+receipt, so `retain` copies the output, byte for byte, to
+`<git-dir>/review-receipts/reviews/<artifact>.<lane>.<digest>.json` as soon as
+it exists: before the claim, the schema check and every abort path. The gate
+prints the path only after the blocking marker below is written, because a
+write to a closed terminal ends the shell: the Codex gate keeps the output
+and records the marker silently the moment the reviewer returns, and again
+from its exit and cancellation handlers, which ignore `SIGPIPE`. The newest
+records are kept and older ones pruned
+(`RETAINED_REVIEWS` in `review-receipt.py`). A record is evidence only:
+nothing reads it to reach a verdict, clear a marker or accept a receipt.
+
 **A blocking verdict is a durable marker, not only a token race (#573).** Every
 blocking exit of both gates first runs `block`, which writes
 `<git-dir>/review-receipts/blocks/<artifact>.json` keyed by base, head, scope
@@ -390,7 +403,9 @@ Low-severity findings never block a push; the gate files them as GitHub issues
 so they are not lost. Dedup is keyed on the **location** — the file a finding
 points at — not on its title, because Codex rewords titles between runs and a
 title-keyed dedup once filed one fixture finding sixteen times. Every filed
-issue carries a hidden `<!-- codex-gate-loc:<owner/repo>:<file> -->` marker;
+issue carries a hidden `<!-- codex-gate-loc:<owner/repo>:<file> -->` marker
+(or `codex-gate-loc2` with the name percent-encoded, for a name that could
+otherwise be read as comment syntax);
 before filing, the gate fetches the repo's `codex-review` issues once and
 matches on that marker:
 

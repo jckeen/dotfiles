@@ -1374,6 +1374,59 @@ def block(args):
     print("Blocking verdict recorded for " + identity["head"])
 
 
+RETAINED_REVIEWS = 30
+
+
+def retain(args):
+    """Keep a reviewer's output past the run that produced it (#788).
+
+    The gate deletes its working files on every exit, and only an approval
+    stores the output in a receipt, so a blocking, failed or cancelled review
+    used to leave its findings nowhere but the terminal. The record is the
+    output's exact bytes, named by the artifact, the lane and the output's own
+    digest: retaining the same output twice is one file. It is evidence only.
+    Nothing reads it to decide a verdict, clear a marker or accept a receipt.
+    """
+    record = read_json(Path(args.snapshot))
+    lane = record["reviewer"]["name"]
+    if lane not in LANES:
+        raise ValueError("unknown review lane: " + str(lane))
+    source = Path(args.output)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("missing or unsafe review output: " + str(source))
+    data = source.read_bytes()
+    if not data:
+        raise ValueError("no review output to retain")
+    _, key = artifact_identity(record["artifact"])
+    _, _, receipts = layout(record["repository"])
+    with attempt_lock(receipts):
+        directory = receipts / "reviews"
+        if directory.is_symlink() or (os.path.lexists(directory) and not directory.is_dir()):
+            raise ValueError("retained review store must be a real directory")
+        directory.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
+        path = directory / f"{key}.{lane}.{digest(data)[:16]}.json"
+        fd, temporary = tempfile.mkstemp(prefix=".review-", dir=str(directory))
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        # Bounded: the newest records stay, this one included.
+        kept = sorted(
+            (item for item in directory.glob("*.json") if item.is_file() and not item.is_symlink()),
+            key=lambda item: (item.stat().st_mtime_ns, item.name),
+        )
+        for item in kept[:-RETAINED_REVIEWS]:
+            if item != path:
+                item.unlink()
+    print(path)
+
+
 def validate_artifact(record):
     assert_attempt(record)
     artifact = record["artifact"]
@@ -1831,6 +1884,9 @@ def main():
     for name in ("claim", "verify", "classify", "block"):
         sub = commands.add_parser(name)
         sub.add_argument("--snapshot", required=True)
+    sub = commands.add_parser("retain")
+    sub.add_argument("--snapshot", required=True)
+    sub.add_argument("--output", required=True)
     sub = commands.add_parser("lane")
     sub.add_argument("--repo", default=".")
     sub.add_argument("--base")
