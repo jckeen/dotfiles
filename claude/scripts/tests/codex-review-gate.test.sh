@@ -1020,7 +1020,9 @@ review_with "$BIG_FINDING"
 check "#788: a failed part is reported, not passed off as filed" 0 "could not finish it (1 of 2 part(s) posted" --uncommitted
 assert "#788: the half-delivered issue never gets its location marker" "! posted | grep -qF 'codex-gate-loc'"
 assert "#788: the closing line counts it as not delivered" "grep -qF '0 filed, 0 added to an open issue, 0 already accepted, 1 not delivered' <<<\"\$CHECK_OUTPUT\""
-assert "#788: the run names where the whole finding is kept" "grep -qF \"kept in \$(retained)\" <<<\"\$CHECK_OUTPUT\""
+# By file name: the gate prints the canonical path, and on macOS the
+# temporary directory is reached through a symlink.
+assert "#788: the run names where the whole finding is kept" "grep -F 'and kept in ' <<<\"\$CHECK_OUTPUT\" | grep -qF \"/review-receipts/reviews/\$(basename \"\$(retained)\")\""
 rm -rf "$R"
 
 # A read or a render that fails is a finding not delivered (#787 review 7).
