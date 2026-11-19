@@ -284,10 +284,10 @@ someone chose to run.
 
 | Subcommand | What it does |
 |---|---|
-| `review-receipt.py lane --repo . --scope committed [--base <ref>]` | Read-only. Prints `{tier, reason, risk_paths, required_lane}` and **mints nothing** — no receipt, no attempt marker, no run directory, so asking cannot invalidate an approval already in hand |
-| `review-receipt.py check --repo . --head <sha> [--base <ref>]` | Validates shipping evidence. The re-capture uses the base commit pinned when the review began, and the receipt must cover the current merge base of HEAD and the base. A base tip that moved on, for example because a sibling merged, therefore does not void it; a changed HEAD, tree or merge base does (#680). Recomputes the classification on the re-captured patch, refuses a mismatch, and refuses a receipt whose lane ranks below the requirement. Checking by hand, run it with **no** `--reviewer` — it enforces the lane requirement without your needing to know which lane ran. Naming a lane additionally requires that lane's own receipt to be current, which is why `review-and-push.sh` names the lane it dispatched |
+| `review-receipt.py lane --repo . --scope committed [--clean-worktree] [--base <ref>]` | Read-only. Prints `{tier, reason, risk_paths, required_lane}` and **mints nothing** — no receipt, no attempt marker, no run directory, so asking cannot invalidate an approval already in hand. `--clean-worktree` (requires `--scope committed`) classifies from committed Git objects only so repos with untracked `.claude/settings.json` or `.env*` can route cleanly |
+| `review-receipt.py check --repo . --head <sha> [--base <ref>]` | Validates shipping evidence. The re-capture uses the base commit pinned when the review began, and the receipt must cover the current merge base of HEAD and the base. A base tip that moved on, for example because a sibling merged, therefore does not void it; a changed HEAD, tree or merge base does (#680). Recomputes the classification on the re-captured patch, refuses a mismatch, and refuses a receipt whose lane ranks below the requirement. Checking by hand, run it with **no** `--reviewer` — it enforces the lane requirement without your needing to know which lane ran. Naming a lane additionally requires that lane's own receipt to be current, which is why `review-and-push.sh` names the lane it dispatched. A receipt minted under `--clean-worktree` binds to pure Git objects (`head`, `tree`, `base`, patch digests, `changed_paths`, `changed_modes`, committed `instruction_links`) rather than caller-worktree hashes |
 | `review-receipt.py stats --repo . [--since-days N]` | Lane × outcome counts from `<git-dir>/review-receipts/ledger.jsonl`, plus how often the Antigravity lane degraded to Codex |
-| `review-receipt.py capture --repo . --scope <s> --reviewer <lane> [--base <ref>]` | The gates' snapshot step. Opens this lane's attempt (retiring only this lane's receipt) and prints the run directory; touches no other lane (#499) |
+| `review-receipt.py capture --repo . --scope <s> --reviewer <lane> [--receipt-repo <dir>] [--base <ref>]` | The gates' snapshot step. Opens this lane's attempt (retiring only this lane's receipt) and prints the run directory; touches no other lane (#499). `--receipt-repo` requires `--scope committed` and a distinct owned clean worktree sharing the same `git-common-dir` (supporting linked worktrees and `git init --separate-git-dir` primary checkouts) and pinned `HEAD`: the gate rejects inherited Git routing overrides, materializes `HEAD` from raw Git objects into the detached worktree (with explicit per-worktree `GIT_INDEX_FILE`, rejecting escaping symlinks, and without running Git smudge filters or hooks), and captures from the clean worktree while receipts, attempt markers, blocks, retained outputs, and ledger entries land in `<receipt-repo>`'s git-dir (live installed reviewer/gate surfaces resolving inside `<receipt-repo>`, including `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `AGENTS.override.md`, nested skill/rule links, and the selected reviewer executable, must still be clean) |
 | `review-receipt.py claim --snapshot <run>/snapshot.json` | The gates' commitment step, called once a gate can reach a verdict. Retires every other lane's receipt and attempt, then marks this attempt claimed, which `complete` requires. A superseded attempt still retires every lane, its own included, before it refuses (fail closed), since its verdict may be blocking |
 | `review-receipt.py begin …` | Backward-compatible `capture` then `claim`, same arguments as `capture` |
 | `review-receipt.py block --snapshot <run>/snapshot.json` | The gates' blocking-verdict step (#573). Records a durable marker for the snapshot's artifact (base, head, scope, patch digest), stamped with the verdict time. Needs no live, claimed or unsuperseded attempt |
@@ -485,6 +485,41 @@ or machinery require review outside both gates, because both runtimes load
 those sources.
 An override records no independent approval by itself; retain the actual
 review evidence and validate the final artifact receipt before shipping.
+
+### Clean worktree committed reviews (`--clean-worktree`)
+
+Repositories that keep untracked operator-local files in their working tree
+(for example `.claude/settings.json` or `.env*`) cannot pass an ordinary
+`--committed` snapshot when untracked files are visible in the workspace. Pass
+`--committed --clean-worktree` to `codex-review-gate.sh` or
+`antigravity-review-gate.sh` (and `--clean-worktree` with `--scope committed`
+to `review-receipt.py lane`):
+
+- `gate-lib.sh` refuses inherited Git routing/config overrides, creates a private
+  `0700` detached worktree of pinned `HEAD` in temp storage, materializes raw
+  blobs via `review-receipt.py materialize` (bound to that worktree's own
+  gitdir/index, rejecting escaping symlinks, and never executing smudge filters),
+  and cleans both the checkout and its registered worktree metadata on exit or
+  signal cancellation.
+- `codex-review-gate.sh` invokes Codex with the detached clean worktree as its
+  working directory, while `antigravity-review-gate.sh` runs Step 3 local
+  compile/lint checks against a second disposable detached worktree of pinned
+  `HEAD` (preserving Git index and `HEAD` metadata for Git-dependent linters and
+  builds while keeping generated build caches like `tsconfig.tsbuildinfo`, lint
+  caches, and `Cargo.lock` out of the captured worktree, and degrading cleanly
+  when `package.json` declares dependencies not materialized in `HEAD`) and runs
+  `agy` inside its materialized jail.
+- `review-receipt.py capture` / `begin` takes `--receipt-repo <caller>`
+  (requiring `--scope committed`, distinct owned worktrees sharing the same
+  `git-common-dir` — including `git init --separate-git-dir` primary checkouts —
+  matching `HEAD`, a clean detached worktree free of escaping symlinks, and
+  recursive live-surface cleanliness across installed skill/rule/script bundles,
+  `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `AGENTS.override.md`, and the selected
+  reviewer executable using POSIX symlink resolution), writing snapshots,
+  attempts, receipts, block markers, retained outputs, and ledger entries into
+  `<caller>`'s git-dir. Completed `--clean-worktree` receipts bind to pure Git
+  objects with `--attr-source` pinned to `HEAD` so `review-receipt.py check`
+  and `githooks/pre-push` succeed after the temporary worktree is removed.
 
 ### Claude script tiers
 

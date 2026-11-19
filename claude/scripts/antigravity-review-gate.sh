@@ -79,8 +79,8 @@
 #     (gate_verify_agy_model): warning only, never blocks.
 #
 # Usage:
-#   antigravity-review-gate.sh [--base <branch>] [--committed|--uncommitted] [--require]
-#                              [--model <display-label>]
+#   antigravity-review-gate.sh [--base <branch>] [--committed|--uncommitted] [--clean-worktree]
+#                              [--require] [--model <display-label>]
 #
 # Exit codes:
 #   0  clean, or only P3+ nits
@@ -103,6 +103,17 @@
 # could not run" and falls back to Codex for; exit 2 never falls back.
 
 set -euo pipefail
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_RUN_DIR=""
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_CLEAN_WT=""
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_CLEAN_WT_ROOT=""
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_RECEIPT_REPO=""
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_WORK_REPO=""
+GATE_EXIT_HANDLER=""
 
 # Shared gate plumbing: colors, base resolution, diff-target selection, diff
 # extraction/filtering, hash fencing, portable timeout (#200). gate-lib.sh
@@ -154,6 +165,7 @@ fi
 BASE=""
 FORCE_COMMITTED=false
 FORCE_UNCOMMITTED=false
+CLEAN_WORKTREE=false
 # Display LABEL, not a slug (#205). `${VAR-default}` (no colon): an explicitly
 # empty ANTIGRAVITY_GATE_MODEL disables pinning; unset gets the default. The
 # previous default ("Gemini 3.1 Pro (High)") left agy's model list by 1.4.2;
@@ -163,18 +175,27 @@ MODEL="${ANTIGRAVITY_GATE_MODEL-Gemini 4 Argon (High)}"
 # shellcheck disable=SC2034  # BASE, FORCE_COMMITTED, and FORCE_UNCOMMITTED are read by gate-lib.sh.
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --base)        BASE="${2:-}"; shift 2 ;;
-    --committed)   FORCE_COMMITTED=true; shift ;;
-    --uncommitted) FORCE_UNCOMMITTED=true; shift ;;
-    --require)     REQUIRED=1; shift ;;
-    --model)       MODEL="${2:-}"; shift 2 ;;
-    -h|--help)     sed -n '2,80p' "$0"; exit 0 ;;
-    *)             red "Unknown arg: $1 (try --help)"; exit 64 ;;
+    --base)           BASE="${2:-}"; shift 2 ;;
+    --committed)      FORCE_COMMITTED=true; shift ;;
+    --uncommitted)    FORCE_UNCOMMITTED=true; shift ;;
+    --clean-worktree) CLEAN_WORKTREE=true; shift ;;
+    --require)        REQUIRED=1; shift ;;
+    --model)          MODEL="${2:-}"; shift 2 ;;
+    -h|--help)        sed -n '2,103p' "$0"; exit 0 ;;
+    *)                red "Unknown arg: $1 (try --help)"; exit 64 ;;
   esac
 done
 
 if [[ "$FORCE_COMMITTED" == true && "$FORCE_UNCOMMITTED" == true ]]; then
   red "Options --committed and --uncommitted cannot be combined."
+  exit 2
+fi
+if [[ "$CLEAN_WORKTREE" == true && "$FORCE_UNCOMMITTED" == true ]]; then
+  red "Options --clean-worktree and --uncommitted cannot be combined."
+  exit 2
+fi
+if [[ "$CLEAN_WORKTREE" == true && "$FORCE_COMMITTED" != true ]]; then
+  red "Option --clean-worktree requires --committed."
   exit 2
 fi
 
@@ -275,6 +296,21 @@ command -v jq >/dev/null 2>&1 || { red "jq is required for artifact receipts."; 
 gate_resolve_base
 
 gate_select_diff_target
+
+# shellcheck disable=SC2329  # invoked by early signal traps prior to Step 4
+_agy_early_cancel() {
+  trap '' INT TERM HUP QUIT
+  gate_cleanup || true
+  trap - "$1"
+  kill -s "$1" "$$"
+}
+if [[ "$CLEAN_WORKTREE" == true ]]; then
+  for gate_signal in INT TERM HUP QUIT; do
+    # shellcheck disable=SC2064  # Bind each signal name now, deliberately.
+    trap "_agy_early_cancel $gate_signal" "$gate_signal"
+  done
+  gate_clean_worktree_setup
+fi
 
 # ─── Step 2: extract + filter the diff ─────────────────────────
 # Passive filename filters retain instructions, executables, and symlinks.
@@ -405,31 +441,189 @@ if [[ "$GATE_REQUIRED_LANE" == codex ]]; then
   yellow "  receipt check. Run codex-review-gate.sh --require to ship (ADR-0008)."
 fi
 
+# `env -u` flags for every variable that reroutes git away from the current
+# directory (shared across isolated Step 3 validation and the agy jail #687).
+GIT_ENV_UNSET=()
+for _v in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_IMPLICIT_WORK_TREE \
+  GIT_GRAFT_FILE GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE GIT_NAMESPACE GIT_PREFIX \
+  GIT_ATTR_SOURCE GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT \
+  GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; do
+  GIT_ENV_UNSET+=(-u "$_v")
+done
+unset _v
+
+run_step3_checks() {
+  local check_dir="$1" cargo_target="${2:-}" check_path="$PATH"
+  if [[ -d "$check_dir/node_modules/.bin" ]]; then
+    check_path="$check_dir/node_modules/.bin:$check_path"
+  fi
+  if [[ -f "$check_dir/package.json" ]]; then
+    if [[ -f "$check_dir/tsconfig.json" ]] && grep -q '"typescript"' "$check_dir/package.json" 2>/dev/null; then
+      echo "  → tsc --noEmit"
+      (cd -- "$check_dir" && PATH="$check_path" npx tsc --noEmit) || { red "  TypeScript compilation failed — fix compiler errors before review."; gate_block; gate_claim; exit 2; }
+    fi
+    if grep -q '"lint"' "$check_dir/package.json" 2>/dev/null; then
+      echo "  → lint"
+      local -a lint_cmd=(npm run lint)
+      if   [[ -f "$check_dir/bun.lockb" || -f "$check_dir/bun.lock" ]]; then lint_cmd=(bun run lint)
+      elif [[ -f "$check_dir/pnpm-lock.yaml" ]];                         then lint_cmd=(pnpm run lint)
+      elif [[ -f "$check_dir/yarn.lock" ]];                              then lint_cmd=(yarn run lint)
+      fi
+      (cd -- "$check_dir" && PATH="$check_path" "${lint_cmd[@]}") || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
+    fi
+  elif [[ -f "$check_dir/Cargo.toml" ]]; then
+    echo "  → cargo check"
+    if [[ -n "$cargo_target" ]]; then
+      (cd -- "$check_dir" && CARGO_TARGET_DIR="$cargo_target" cargo check) || { red "  cargo check failed."; gate_block; gate_claim; exit 2; }
+    else
+      (cd -- "$check_dir" && cargo check) || { red "  cargo check failed."; gate_block; gate_claim; exit 2; }
+    fi
+  elif [[ -f "$check_dir/go.mod" ]]; then
+    echo "  → go vet"
+    (cd -- "$check_dir" && go vet ./...) || { red "  go vet failed."; gate_block; gate_claim; exit 2; }
+  fi
+}
+
 # ─── Step 3: local validation before dispatch ────────────────────────────
 # Cheap, deterministic checks before spending plan quota. Fail HARD (exit 2) —
 # broken code should never reach the review step. A failure here is a blocking
 # verdict on the artifact, so it claims first (#499): an older approval from the
 # other lane must not ship code this lane found broken.
 echo "Running local compile/lint checks first..."
-if [[ -f package.json ]]; then
-  if [[ -f tsconfig.json ]] && grep -q '"typescript"' package.json 2>/dev/null; then
-    echo "  → tsc --noEmit"
-    npx tsc --noEmit || { red "  TypeScript compilation failed — fix compiler errors before review."; gate_block; gate_claim; exit 2; }
-  fi
-  if grep -q '"lint"' package.json 2>/dev/null; then
-    echo "  → lint"
-    if   [[ -f bun.lockb ]];       then bun run lint   || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
-    elif [[ -f pnpm-lock.yaml ]];  then pnpm run lint  || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
-    elif [[ -f yarn.lock ]];       then yarn run lint  || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
-    else                                npm run lint   || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
+if [[ "$CLEAN_WORKTREE" == true ]]; then
+  step3_need_tsc=false
+  step3_need_lint=false
+  step3_need_cargo=false
+  step3_need_go=false
+  if [[ -f "$GATE_CLEAN_WT/package.json" ]]; then
+    if [[ -f "$GATE_CLEAN_WT/tsconfig.json" ]] && grep -q '"typescript"' "$GATE_CLEAN_WT/package.json" 2>/dev/null; then
+      step3_need_tsc=true
     fi
+    if grep -q '"lint"' "$GATE_CLEAN_WT/package.json" 2>/dev/null; then
+      step3_need_lint=true
+    fi
+    if [[ "$step3_need_tsc" == true || "$step3_need_lint" == true ]]; then
+      dep_rc=0
+      python3 - "$GATE_CLEAN_WT" "$step3_need_tsc" "$step3_need_lint" <<'PYDEPS' || dep_rc=$?
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+try:
+    root = Path(os.path.realpath(sys.argv[1]))
+    root_st = os.stat(root)
+    if not stat.S_ISDIR(root_st.st_mode):
+        sys.exit(4)
+    root_id = (root_st.st_dev, root_st.st_ino)
+except OSError:
+    sys.exit(4)
+
+need_tsc = sys.argv[2] == "true"
+need_lint = sys.argv[3] == "true"
+
+
+def within_root(path_obj):
+    try:
+        cur = Path(os.path.realpath(path_obj))
+    except OSError:
+        return False
+    while True:
+        try:
+            st = os.lstat(cur)
+        except OSError:
+            st = None
+        if st is not None and stat.S_ISDIR(st.st_mode) and (st.st_dev, st.st_ino) == root_id:
+            return True
+        parent = cur.parent
+        if parent == cur:
+            return False
+        cur = parent
+
+
+pkg_path = root / "package.json"
+if not within_root(pkg_path):
+    sys.exit(4)
+try:
+    data = json.loads(pkg_path.read_text(encoding="utf-8"))
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    sys.exit(2)
+if not isinstance(data, dict):
+    sys.exit(2)
+dep_keys = (
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+    "bundledDependencies",
+    "bundleDependencies",
+    "workspaces",
+)
+pnpm_ws = root / "pnpm-workspace.yaml"
+has_pnpm_ws = False
+if pnpm_ws.is_file():
+    if not within_root(pnpm_ws):
+        sys.exit(4)
+    try:
+        has_pnpm_ws = any(
+            line.strip() and not line.lstrip().startswith("#")
+            for line in pnpm_ws.read_text(encoding="utf-8").splitlines()
+        )
+    except (OSError, UnicodeDecodeError):
+        has_pnpm_ws = True
+has_lint_deps = any(bool(data.get(key)) for key in dep_keys) or has_pnpm_ws
+nm = root / "node_modules"
+has_nm = nm.is_dir() and not nm.is_symlink()
+tsc_bin = nm / ".bin" / "tsc"
+has_tsc_bin = has_nm and tsc_bin.is_file() and within_root(tsc_bin) and os.access(tsc_bin, os.X_OK)
+lint_uses_yarn = (
+    (root / "yarn.lock").is_file()
+    and within_root(root / "yarn.lock")
+    and not any((root / lf).is_file() for lf in ("bun.lockb", "bun.lock", "pnpm-lock.yaml"))
+)
+pnp_cjs = root / ".pnp.cjs"
+pnp_mjs = root / ".pnp.mjs"
+has_pnp_loader = (pnp_cjs.is_file() and within_root(pnp_cjs)) or (
+    pnp_mjs.is_file() and within_root(pnp_mjs)
+)
+yarn_cache = root / ".yarn/cache"
+has_pnp = (
+    lint_uses_yarn
+    and has_pnp_loader
+    and yarn_cache.is_dir()
+    and not yarn_cache.is_symlink()
+    and within_root(yarn_cache)
+)
+tsc_ok = (not need_tsc) or has_tsc_bin
+lint_ok = (not need_lint) or (not has_lint_deps) or has_nm or has_pnp
+if not (tsc_ok and lint_ok):
+    sys.exit(3)
+PYDEPS
+      if [[ "$dep_rc" -eq 2 ]]; then
+        red "  package.json is not valid JSON — fix it before review."; gate_block; gate_claim; exit 2
+      elif [[ "$dep_rc" -eq 3 ]]; then
+        degrade "Step 3 package.json compile/lint requires installed dependencies that are absent from the isolated --clean-worktree checkout; run codex-review-gate.sh --committed --clean-worktree or run antigravity-review-gate.sh --committed in a checkout with installed dependencies."
+      elif [[ "$dep_rc" -ne 0 ]]; then
+        degrade "could not inspect package.json dependencies for isolated Step 3 validation."
+      fi
+    fi
+  elif [[ -f "$GATE_CLEAN_WT/Cargo.toml" ]]; then
+    step3_need_cargo=true
+  elif [[ -f "$GATE_CLEAN_WT/go.mod" ]]; then
+    step3_need_go=true
   fi
-elif [[ -f Cargo.toml ]]; then
-  echo "  → cargo check"
-  cargo check || { red "  cargo check failed."; gate_block; gate_claim; exit 2; }
-elif [[ -f go.mod ]]; then
-  echo "  → go vet"
-  go vet ./... || { red "  go vet failed."; gate_block; gate_claim; exit 2; }
+  if [[ "$step3_need_tsc" == true || "$step3_need_lint" == true || "$step3_need_cargo" == true || "$step3_need_go" == true ]]; then
+    STEP3_DIR="$GATE_CLEAN_WT_ROOT/$(basename -- "$GATE_CLEAN_WT_ROOT")-step3"
+    STEP3_HEAD="$(jq -r '.artifact.head' "$GATE_RUN_DIR/snapshot.json")" || degrade "could not read captured HEAD for isolated Step 3 validation."
+    gate_clean_worktree_add_extra "$STEP3_DIR" "$STEP3_HEAD" \
+      || degrade "could not materialize isolated Step 3 validation worktree."
+    run_step3_checks "$STEP3_DIR" "$GATE_CLEAN_WT_ROOT/cargo-target"
+    gate_clean_worktree_remove_extra
+  fi
+else
+  run_step3_checks "." ""
 fi
 
 # ─── Step 4: run agy print mode, non-interactively and tool-locked ─
@@ -493,6 +687,8 @@ gate_finish() {
   gate_cleanup || true
   exit "$rc"
 }
+# shellcheck disable=SC2034
+GATE_EXIT_HANDLER=gate_finish
 trap gate_finish EXIT
 # Bash defers a signal's trap until the foreground reviewer exits, so a
 # cancelled run may already hold agy's output. Output the completed-run parse
@@ -520,10 +716,11 @@ cancel_agy_review() {
     } >&8 2>&9
     exit 2
   fi
-  trap - "$1"
   # The default action below skips the EXIT trap, and the jail links the
-  # credential: remove it first.
+  # credential: remove both jail and clean worktree before re-raising.
   agy_jail_cleanup || true
+  gate_cleanup || true
+  trap - "$1"
   kill -s "$1" "$$"
 }
 for gate_signal in INT TERM HUP QUIT; do
@@ -571,16 +768,6 @@ agy_jail_cleanup() {
   rm -rf -- "$AGY_JAIL"
   AGY_JAIL=""
 }
-# `env -u` flags for every variable that reroutes git away from the current
-# directory (the list review-and-push.sh and git-hygiene.sh refuse), so the
-# jail's own repository and the jailed agy see none of them.
-GIT_ENV_UNSET=()
-for _v in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
-  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_IMPLICIT_WORK_TREE \
-  GIT_NAMESPACE GIT_PREFIX GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; do
-  GIT_ENV_UNSET+=(-u "$_v")
-done
-unset _v
 
 # Write the tree of commit $2 of repository $1 under $3, each blob as stored.
 # Not `git archive`: it exports only the cwd's subtree, and it honours

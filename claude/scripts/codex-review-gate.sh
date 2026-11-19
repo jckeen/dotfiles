@@ -59,8 +59,8 @@
 # failures (exit 3). Unparseable-but-present output fails CLOSED (exit 2).
 #
 # Usage:
-#   codex-review-gate.sh [--base <branch>] [--committed|--uncommitted] [--no-issues]
-#                        [--dry-run] [--require] [--claim <text>] [--repro <cmd>]
+#   codex-review-gate.sh [--base <branch>] [--committed|--uncommitted] [--clean-worktree]
+#                        [--no-issues] [--dry-run] [--require] [--claim <text>] [--repro <cmd>]
 #
 # Exit codes:
 #   0  clean, or only low findings (filed as issues)
@@ -72,6 +72,13 @@
 
 set -euo pipefail
 GATE_RUN_DIR=""
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_CLEAN_WT=""
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_CLEAN_WT_ROOT=""
+GATE_RECEIPT_REPO=""
+GATE_WORK_REPO=""
+GATE_EXIT_HANDLER=finish_review
 OUT_FILE=""
 ERR_FILE=""
 REQUEST_FILE=""
@@ -329,7 +336,7 @@ abort_review() {
     # running inside the EXIT handler, where nothing would follow it.
     (gate_claim) || true
   fi
-  if ! python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer codex; then
+  if ! python3 "$RECEIPT_HELPER" invalidate --repo "${GATE_RECEIPT_REPO:-.}" --reviewer codex; then
     [[ -z "$GATE_RUN_DIR" ]] || rm -f -- "${GATE_RUN_DIR%/*}/codex.json"
   fi
   report_retained
@@ -416,6 +423,7 @@ FILE_ISSUES=true
 DRY_RUN=false
 FORCE_COMMITTED=false
 FORCE_UNCOMMITTED=false
+CLEAN_WORKTREE=false
 REQUIRED="${CODEX_GATE_REQUIRED:-0}"
 MAX_ISSUES="${CODEX_GATE_MAX_ISSUES:-10}"
 MAX_DIFF_LINES="${CODEX_GATE_MAX_LINES:-5000}"
@@ -425,21 +433,30 @@ REPRO=""
 # shellcheck disable=SC2034  # FORCE_COMMITTED and FORCE_UNCOMMITTED are read by gate-lib.sh.
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --base)        BASE="$2"; shift 2 ;;
-    --committed)   FORCE_COMMITTED=true; shift ;;
-    --uncommitted) FORCE_UNCOMMITTED=true; shift ;;
-    --no-issues)   FILE_ISSUES=false; shift ;;
-    --dry-run)     DRY_RUN=true; shift ;;
-    --require)     REQUIRED=1; shift ;;
-    --claim)       CLAIM="$2"; shift 2 ;;
-    --repro)       REPRO="$2"; shift 2 ;;
-    -h|--help)     sed -n '2,55p' "$0"; exit 0 ;;
-    *)             red "Unknown arg: $1 (try --help)"; exit 64 ;;
+    --base)           BASE="$2"; shift 2 ;;
+    --committed)      FORCE_COMMITTED=true; shift ;;
+    --uncommitted)    FORCE_UNCOMMITTED=true; shift ;;
+    --clean-worktree) CLEAN_WORKTREE=true; shift ;;
+    --no-issues)      FILE_ISSUES=false; shift ;;
+    --dry-run)        DRY_RUN=true; shift ;;
+    --require)        REQUIRED=1; shift ;;
+    --claim)          CLAIM="$2"; shift 2 ;;
+    --repro)          REPRO="$2"; shift 2 ;;
+    -h|--help)        sed -n '2,71p' "$0"; exit 0 ;;
+    *)                red "Unknown arg: $1 (try --help)"; exit 64 ;;
   esac
 done
 
 if [[ "$FORCE_COMMITTED" == true && "$FORCE_UNCOMMITTED" == true ]]; then
   red "Options --committed and --uncommitted cannot be combined."
+  exit 2
+fi
+if [[ "$CLEAN_WORKTREE" == true && "$FORCE_UNCOMMITTED" == true ]]; then
+  red "Options --clean-worktree and --uncommitted cannot be combined."
+  exit 2
+fi
+if [[ "$CLEAN_WORKTREE" == true && "$FORCE_COMMITTED" != true ]]; then
+  red "Option --clean-worktree requires --committed."
   exit 2
 fi
 
@@ -484,6 +501,7 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || degrade "not inside a git
 # finish_review (the EXIT trap) runs gate_cleanup on every exit, including
 # exemption paths. Keep owned review files in that same cleanup contract.
 gate_cleanup() {
+  gate_clean_worktree_cleanup
   [[ -z "${REQUEST_FILE:-}" ]] || rm -f -- "$REQUEST_FILE"
   [[ -z "${OUT_FILE:-}" || "${KEEP_OUTPUT:-false}" == true ]] || rm -f "$OUT_FILE"
   if [[ -n "${ERR_FILE:-}" && "${KEEP_DIAGNOSTIC:-false}" != true ]]; then
@@ -535,6 +553,11 @@ fi
 # Resolve the launcher before artifact capture so the receipt names the file
 # actually invoked even if the managed release symlink changes during review.
 if [[ -z "$GATE_CLI_MISSING" ]]; then
+  # Retain the original selected launcher path before realpath so clean-worktree
+  # live surface checks validate both the selected launcher (CODEX_GATE_BIN,
+  # standalone install, or PATH fallback) and its canonical target.
+  # shellcheck disable=SC2034  # Read by gate_extract_diff in gate-lib.sh.
+  GATE_CLI_LAUNCHER="$GATE_CLI"
   GATE_CLI="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$GATE_CLI" && printf .)"
   GATE_CLI=${GATE_CLI%$'\n.'}
 fi
@@ -548,6 +571,9 @@ command -v jq >/dev/null 2>&1 || degrade "jq not found on PATH (needed to parse 
 # contain. An unresolvable base fails closed before any working-tree fallback.
 gate_resolve_base
 gate_select_diff_target
+if [[ "$CLEAN_WORKTREE" == true ]]; then
+  gate_clean_worktree_setup
+fi
 
 # ─── Extract + filter the diff (the gate scopes; the reviewer never does) ──
 # Passive filename filters retain instructions, executables, and symlinks.
@@ -784,7 +810,7 @@ fi
 # tree, so it reads the working-tree file.
 if [[ "$GATE_SCOPE" == committed ]]; then
   IGNORE_FILE="$GATE_RUN_DIR/ignore-file"
-  if ! git show "$(jq -r '.artifact.head' "$GATE_RUN_DIR/snapshot.json"):.codex-review-ignore" > "$IGNORE_FILE" 2>/dev/null; then
+  if ! GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects -C "${GATE_RECEIPT_REPO:-.}" show "$(jq -r '.artifact.head' "$GATE_RUN_DIR/snapshot.json"):.codex-review-ignore" > "$IGNORE_FILE" 2>/dev/null; then
     rm -f "$IGNORE_FILE"
   fi
 else
@@ -837,6 +863,7 @@ ${FENCE}"
 
 # ─── Run the review ────────────────────────────────────────────
 OUT_FILE="$(mktemp -t codex-review.XXXXXX.json)"
+[[ "$OUT_FILE" == /* ]] || OUT_FILE="$PWD/$OUT_FILE"
 # Failure stderr can contain the full prompt. Retain only a private, bounded
 # tail in the system temp directory; never echo its untrusted bytes to the user.
 ERR_FILE="$(mktemp /tmp/codex-review-err.XXXXXX)"
@@ -887,7 +914,11 @@ if [[ "$REQUEST_BYTES" -gt 1000000 ]]; then
   REQUEST_SHA="$(request_digest)" || exit 3
   TRANSPORT_DIR="$GATE_RUN_DIR/multipart"
   mkdir -m 700 "$TRANSPORT_DIR" || exit 3
-  "$GATE_CLI" debug models --bundled > "$TRANSPORT_DIR/catalog.json" 2> "$ERR_FILE" || { report_diagnostic; exit 3; }
+  if [[ -n "${GATE_WORK_REPO:-}" ]]; then
+    (cd -- "$GATE_WORK_REPO" && exec "$GATE_CLI" debug models --bundled) > "$TRANSPORT_DIR/catalog.json" 2> "$ERR_FILE" || { report_diagnostic; exit 3; }
+  else
+    "$GATE_CLI" debug models --bundled > "$TRANSPORT_DIR/catalog.json" 2> "$ERR_FILE" || { report_diagnostic; exit 3; }
+  fi
   PART_COUNT="$(python3 "$SCRIPT_DIR/review-multipart.py" prepare "$REQUEST_FILE" "$TRANSPORT_DIR")" || exit 3
   MANIFEST_SHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$TRANSPORT_DIR/manifest.json")" || exit 3
 
@@ -926,9 +957,15 @@ if [[ -n "$REQUEST_FILE" ]]; then
     fi
     : > "$PART_OUTPUT"
     chmod 600 "$PART_OUTPUT"
-    "$GATE_CLI" "${PART_ARGS[@]}" - --json \
-      --output-schema "$PART_SCHEMA" -o "$PART_OUTPUT" \
-      < "$TRANSPORT_DIR/part-$PART_INDEX.txt" > "$TRANSPORT_DIR/events.jsonl" 2> "$ERR_FILE"
+    if [[ -n "${GATE_WORK_REPO:-}" ]]; then
+      (cd -- "$GATE_WORK_REPO" && exec "$GATE_CLI" "${PART_ARGS[@]}" - --json \
+        --output-schema "$PART_SCHEMA" -o "$PART_OUTPUT") \
+        < "$TRANSPORT_DIR/part-$PART_INDEX.txt" > "$TRANSPORT_DIR/events.jsonl" 2> "$ERR_FILE"
+    else
+      "$GATE_CLI" "${PART_ARGS[@]}" - --json \
+        --output-schema "$PART_SCHEMA" -o "$PART_OUTPUT" \
+        < "$TRANSPORT_DIR/part-$PART_INDEX.txt" > "$TRANSPORT_DIR/events.jsonl" 2> "$ERR_FILE"
+    fi
     CODEX_RC=$?
     [[ "$CODEX_RC" -eq 0 ]] || break
     REVIEW_SESSION="$(python3 "$SCRIPT_DIR/review-multipart.py" check "$TRANSPORT_DIR" "$PART_INDEX" "$REVIEW_SESSION" "$MANIFEST_SHA")"
@@ -942,10 +979,17 @@ if [[ -n "$REQUEST_FILE" ]]; then
     python3 "$RECEIPT_HELPER" verify --snapshot "$GATE_RUN_DIR/snapshot.json" || { verdict_in_output; exit 2; }
   done
 else
-  "$GATE_CLI" exec - \
-    -s read-only -c 'approval_policy="never"' --ignore-rules \
-    --output-schema "$SCHEMA" \
-    -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
+  if [[ -n "${GATE_WORK_REPO:-}" ]]; then
+    (cd -- "$GATE_WORK_REPO" && exec "$GATE_CLI" exec - \
+      -s read-only -c 'approval_policy="never"' --ignore-rules \
+      --output-schema "$SCHEMA" \
+      -o "$OUT_FILE") <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
+  else
+    "$GATE_CLI" exec - \
+      -s read-only -c 'approval_policy="never"' --ignore-rules \
+      --output-schema "$SCHEMA" \
+      -o "$OUT_FILE" <<<"$PROMPT" >/dev/null 2>"$ERR_FILE"
+  fi
   CODEX_RC=$?
 fi
 set -e
@@ -1162,8 +1206,8 @@ if [[ "$N_LOW" -gt 0 ]]; then
     yellow "  ⚠ could not load existing issues for dedup (repo slug or REST fetch unavailable) — not filing; address the above manually"
     n_unpublished="$N_LOW"
   else
-    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
-    short_sha="$(git rev-parse --short HEAD 2>/dev/null || echo "?")"
+    branch="$(git -C "${GATE_RECEIPT_REPO:-.}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
+    short_sha="$(git -C "${GATE_RECEIPT_REPO:-.}" rev-parse --short HEAD 2>/dev/null || echo "?")"
     filed=0 handled=0
     text_file="$GATE_RUN_DIR/publish-text" footer_file="$GATE_RUN_DIR/publish-footer"
     # One finding class across many files used to become one issue per file:
