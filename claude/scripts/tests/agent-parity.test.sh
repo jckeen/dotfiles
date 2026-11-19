@@ -104,6 +104,7 @@ assert() {
 #   ci-cost                 -> "CI minutes are a budget"
 #   build-standards         -> "build standards hold in every language"
 #   tests-assert-behavior   -> "a test asserts behavior"
+#   real-engine-tests       -> "real engine or parser over ... hand-rolled regex"
 claude_frag() {
   w agents/canon/fragments/claude.md \
     '# Claude global rules' \
@@ -120,7 +121,8 @@ claude_frag() {
     '- Two-floor grounding: a project floor plus an external floor.' \
     '- Hosted CI minutes are a budget, in every repo.' \
     '- Build standards hold in every language.' \
-    '- A test asserts behavior: call the code and check its result.'
+    '- A test asserts behavior: call the code and check its result.' \
+    '- Prefer the real engine or parser over a hand-rolled regex scanner in tests.'
 }
 
 # Antigravity side, same concepts in a different voice.
@@ -140,7 +142,8 @@ gemini_frag() {
     '- Two-floor grounding: verify a project floor and an external floor.' \
     '- Hosted CI minutes are a budget, in every repo.' \
     '- Build standards hold in every language.' \
-    '- A test asserts behavior: call the code and check its result.'
+    '- A test asserts behavior: call the code and check its result.' \
+    '- Prefer the real engine or parser over a hand-rolled regex scanner in tests.'
 }
 
 # Codex side, same concepts in a third voice. $1 optionally names a rule
@@ -176,6 +179,8 @@ codex_frag() {
     || lines+=('- Build standards hold in every language.')
   [[ "$omit" == tests-assert-behavior ]] \
     || lines+=('- A test asserts behavior, never source text or a mock call.')
+  [[ "$omit" == real-engine-tests ]] \
+    || lines+=('- Prefer the real engine or parser over a hand-rolled regex or grammar scanner.')
   w agents/canon/fragments/codex.md "${lines[@]}"
 }
 
@@ -233,12 +238,21 @@ check "bare 'scope' keyword no longer satisfies scoped-edits" 1 "scoped-edits"
 
 # --- Cases 6-9: each lane-contract / two-floor rule can fail independently ---
 for rule in one-owner-worktree adversarial-verification handoff-claim-repro \
-  two-floor-grounding ci-cost build-standards tests-assert-behavior; do
+  two-floor-grounding ci-cost build-standards tests-assert-behavior real-engine-tests; do
   new_repo
   all_frags "$rule"
   gen
   check "missing $rule fails as drift" 1 "$rule"
 done
+
+# Bare keywords ("regex", "parser") without the rule phrase do not satisfy real-engine-tests.
+new_repo
+all_frags real-engine-tests
+{
+  echo '- Write a parser test and keep regex checks fast.'
+} >> "$R/agents/canon/fragments/codex.md"
+gen
+check "bare 'regex' and 'parser' keywords do not satisfy real-engine-tests" 1 "real-engine-tests"
 
 # --- Case 10: hand-edit to a generated file → currency fail ------------------
 new_repo
