@@ -139,6 +139,21 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
   protection and merge queues are the operator's decision: propose, never
   change. Never save minutes by weakening what gates a merge.
 
+## Runtime Resilience
+
+- **Auto-update mid-session recovery (`agy.*.old`):** `agy` self-updates in
+  the background by renaming the running binary to `agy.*.old` under
+  `~/.local/bin` and writing the new binary (`agy --help` and
+  `agy update --help` expose no flag to disable or defer this). Inside the
+  Linux/WSL terminal sandbox, that replacement can break subsequent
+  `run_command` launches mid-session with executable or mount errors. If
+  that happens, do not retry in a loop or ask to bypass the sandbox: write a
+  brief handoff note containing your conversation ID, stop cleanly, and tell
+  the operator to resume on the updated binary with
+  `agy --conversation <id>` (and after older sessions exit, check with
+  `check-antigravity.sh` on the host and remove stale `~/.local/bin/agy.*.old`
+  backups manually).
+
 ## Teammate Contract
 
 Evidence requirements for audit and review dispatches:
