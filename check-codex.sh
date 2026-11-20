@@ -58,7 +58,10 @@ fi
 source "$DOTFILES_DIR/lib-checks.sh"
 # The sibling repo follows DOTFILES_DEV_DIR like setup.sh does (#701); the
 # explicit CODEX_MEMORY_REPO still wins.
-CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$(dotfiles_dev_dir "$DOTFILES_DIR")/codex-memory}" || exit 1
+if [ -z "${CODEX_MEMORY_REPO:-}" ]; then
+  _codex_dev_dir="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
+  CODEX_MEMORY_REPO="${_codex_dev_dir%/}/codex-memory"
+fi
 if [ ! -f "$DOTFILES_DIR/claude/scripts/retired-skill-links.sh" ]; then
   echo "FATAL: retired-skill-links.sh is missing (broken checkout)" >&2
   exit 1

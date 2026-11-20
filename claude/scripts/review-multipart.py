@@ -129,6 +129,9 @@ def audit_history(records, expected_inputs, catalog):
         if kind == "turn_context":
             if payload.get("sandbox_policy") != {"type": "read-only"}:
                 raise ValueError("native turn lost read-only policy")
+            # Any other policy lets the model escalate out of the sandbox (#651).
+            if payload.get("approval_policy") != "never":
+                raise ValueError("native turn could escalate out of the read-only sandbox")
             contexts.append(payload)
         if kind == "response_item" and payload.get("role") == "user":
             value = "".join(

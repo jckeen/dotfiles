@@ -237,21 +237,33 @@ exit "${SCAN_RC:-0}"
         self.assertIn(self.base, receipts[1])
 
     def test_hook_accepts_only_the_explicitly_selected_review_base(self):
+        # A receipt covers merge_base..HEAD (#680). A sibling ref with the same
+        # merge base as the push target names the same reviewed diff, so the
+        # default base accepts it ...
         tree = self.command("git", ["rev-parse", "main^{tree}"]).stdout.strip()
         release = self.command(
             "git", ["commit-tree", tree, "-p", self.base], "release\n"
         ).stdout.strip()
         self.command("git", ["update-ref", "refs/heads/release", release])
         self.record_real_review("release")
+        same_diff = self.run_hook()
+        self.assertEqual(same_diff.returncode, 0, same_diff.stderr)
+        # ... while a base that already contains HEAD reviewed a narrower diff
+        # than pushing HEAD to main would add, and only naming that base accepts.
+        narrow = self.command(
+            "git", ["commit-tree", tree, "-p", self.head], "narrow\n"
+        ).stdout.strip()
+        self.command("git", ["update-ref", "refs/heads/narrow", narrow])
+        self.record_real_review("narrow")
         self.assertNotEqual(self.run_hook().returncode, 0)
-        self.env["REVIEW_RECEIPT_BASE"] = "release"
+        self.env["REVIEW_RECEIPT_BASE"] = "narrow"
         accepted = self.run_hook()
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
         self.env["REVIEW_RECEIPT_BASE"] = "main"
         self.assertNotEqual(self.run_hook().returncode, 0)
         self.env["REVIEW_RECEIPT_BASE"] = "missing-base"
         self.assertNotEqual(self.run_hook().returncode, 0)
-        self.env["REVIEW_RECEIPT_BASE"] = "release"
+        self.env["REVIEW_RECEIPT_BASE"] = "narrow"
         (self.repo / "code.txt").write_text("unreviewed edit\n")
         self.assertNotEqual(self.run_hook().returncode, 0)
 

@@ -17,7 +17,7 @@
 # Usage:
 #   run-tests.sh                      # every suite
 #   run-tests.sh --list               # print the suite names, run nothing
-#   run-tests.sh doc-refs jules-dispatch
+#   run-tests.sh doc-refs agent-parity
 #                                     # only the named suites
 #   run-tests.sh --changed            # suites this branch's diff can affect
 #   run-tests.sh --changed --base upstream/main

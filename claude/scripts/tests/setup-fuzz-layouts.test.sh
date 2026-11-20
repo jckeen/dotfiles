@@ -300,6 +300,12 @@ BOOTSTRAP
     fail "layout $layout executed the Codex private bootstrap (SEED=$SEED)"
   fi
 
+  # DOTFILES_DEV_DIR="$DEV_ISO" must prevent reaching siblings beside REPO_ROOT (#701).
+  REPO_PARENT="$(dirname "$REPO_ROOT")"
+  if grep -Fq "$REPO_PARENT/claude-memory" "$OUT" || grep -Fq "$REPO_PARENT/agy-memory" "$OUT"; then
+    fail "layout $layout reached a real sibling repo beside REPO_ROOT (SEED=$SEED)"
+  fi
+
   rm -rf "$TESTHOME"
   TESTHOME=""
 done

@@ -1,0 +1,90 @@
+---
+name: autonomous-run
+description: Decision layer for unattended or looping work — picks between in-session work, a dynamic workflow, /loop, /goal, Monitor, a Stop hook, or a cloud scheduled task, then sets the stop condition, round cap and verification gate before launch and defines the report. Use when the user says "run this unattended", "keep going until", "loop until done", "babysit this", "come back when it's finished", "overnight", or asks which loop primitive to use. Not for loop syntax itself (/loop, /goal, /schedule, workflow-authoring cover that).
+---
+
+# Autonomous Run
+
+Unattended work fails by not stopping, or by stopping and calling it done.
+Decide the primitive, the finish line and the check before anything starts.
+
+## Five Questions Before Launch
+
+Answer each in one line before starting. An unanswered one means do not run
+unattended.
+
+1. What does done look like?
+2. How does it check its own work?
+3. What may it touch?
+4. What stops it: `--max-turns`, `--max-budget-usd`, a round cap, or K empty rounds?
+5. Who signs off?
+
+## Pick the Primitive (first match wins)
+
+The specific continuation mechanisms come before the general shapes, so a
+small request that names one ("until npm test passes", "watch CI") is not
+swallowed by "stay in conversation".
+
+1. **Needs the user's input or sign-off partway** — split at the gate and run
+   the stages separately.
+2. **Must outlive the session** (nightly, weekly, "while I'm away") — a
+   durable scheduled task, whatever the shape of the work. Needs no local
+   files and should run with this machine off: `/schedule`, a cloud task
+   (fresh clone, auto mode, 1-hour minimum interval, acts as your GitHub
+   identity, so protect `main` with a branch rule first). Needs local files or
+   local tools: a Desktop scheduled task, which runs on this machine while it
+   is on, persists across restarts, and can run as often as every minute when
+   Claude sets it.
+3. **Waiting on something external** (CI, review, deploy) or recurring inside
+   this session, under an hour or over local files — `/loop PROMPT` with no
+   interval and a written stop condition; a fixed `/loop 5m` only for a true
+   cadence. A fixed-interval loop survives `--resume` until it expires; a
+   self-paced one does not. Esc stops a self-paced loop while it waits; a
+   fixed-interval loop only stops when you ask Claude to cancel it.
+4. **"Keep going until COMMAND passes"** — a command Stop hook that keeps its
+   own attempt count and reports "stopped at cap" when it gives up (the block
+   cap, `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, resets whenever Claude calls a
+   tool); see the guide's template. A deterministic command always beats a
+   judged condition, which is why this comes before `/goal`.
+5. **"Keep going until CONDITION"** with no command that decides it — `/goal
+   CONDITION … or stop after N turns`, a prompt-based Stop hook judged by a
+   small model. Deterministic criteria work best.
+6. **Many items, independent verification, or unknown-size discovery** — a
+   dynamic workflow, which the user opts into (`ultracode`, "use a workflow",
+   or `/effort ultracode` they set): propose it with the rough cost and run
+   after the yes. Run a slice, then the full run; save it under
+   `.claude/workflows/` if it will repeat. It takes no mid-run input; in `-p`
+   the user asks for a workflow in plain words, since the `ultracode` keyword
+   is ignored there.
+7. **Everything else: finishes in one sitting, little parallelism** — stay in
+   conversation. Slow commands go to `run_in_background` Bash (30-min default
+   timeout, 2 h max); streams go to `Monitor`.
+
+## Strictness Ladder for the Loop's Own Check
+
+Ask in the prompt → `/goal` → Stop hook → a fresh reviewer agent. Climb when
+the rung below keeps failing. The ladder decides how the loop checks itself;
+the independent review the wrap-up requires before anything ships
+(`/code-review`, and `/security-review` at a trust boundary) is not a rung and
+is never skipped because the lower rungs passed.
+
+## Guardrails (always)
+
+- Write the stop condition and a hard cap before launch. Hitting the cap is a
+  report, not a retry.
+- The last step is verification Claude did not author: tests, CI, or a fresh
+  refuter agent. Count failed or null agents; never filter them silently.
+- Stop and ask on the same error three times; a destructive, shared-branch or
+  paid action; ambiguous acceptance criteria; or verifier and implementer
+  disagreeing twice.
+- No mid-run scope growth. New findings become GitHub issues.
+- Keep task state in a file; a checklist survives compaction.
+- Size `--max-budget-usd` from a slice run before the full run.
+- Read sources from a bookmark, not a time window. Report a failed read as
+  unreadable, never as a quiet day.
+
+## Report
+
+One status line first: done, partial, or stopped at cap. Then what changed,
+the verification evidence (command plus result tail), what was not verified
+or was dropped, and which caps were hit. Then the normal `/handoff`.

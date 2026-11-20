@@ -18,21 +18,14 @@ live source of truth; close them via PRs and the milestone reflects status.
 ## Milestone: Operator pass — 2026-10
 
 The 2026-10-19/20 backlog burn-down shipped every change an agent could land on
-its own. What remains is the work the repo's own rules keep in the operator
-lane: gate machinery, instruction surfaces, and `.github/` workflows. Each is
-prepared as a reviewed, tested patch with its apply order in the operator-pass
-handoff README, and every issue it closes is on the
+its own, and the operator pass then landed the three groups the repo's own
+rules keep in the operator lane: gate machinery, instruction surfaces, and
+`.github/` workflows. What is left on the
 [Operator pass — 2026-10](https://github.com/jckeen/dotfiles/milestone/2)
-milestone.
+milestone is the step that was waiting on them:
 
-- **Gate machinery**: review-receipt false positives, a pinned review base, and
-  a read-only sandbox for both reviewers, plus the Antigravity default model pin.
-- **Instruction surfaces**: the claude.dev audit fixes, the handoff skills
-  filing operator actions as issues, and changelog-fragment guidance.
-- **`.github/` workflows**: the changelog-fragment CI checks, late Codex-review
-  harvesting, and the bash 3.2 status-line run.
-- **Then**: enforce the `codex-review` ruleset (#615) once the review-gates
-  thread-resolution line has landed.
+- **Enforce the `codex-review` ruleset** (#615): run the canary checklist on a
+  live pull request, then apply the ruleset here and across the fleet.
 
 Follow-ups that need no operator review are ordinary open issues; the
 [issue list](https://github.com/jckeen/dotfiles/issues) is the tracker.

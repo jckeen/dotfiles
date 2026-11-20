@@ -35,9 +35,6 @@ REPO_DIR="$(cd "$SRC_DIR/../.." && pwd)"
 
 UNITS=(
   "git-hygiene|.local/state/hygiene"
-  # Paused (ADR-0009): opt in with JULES_LANE_ENABLED=1 once the restart
-  # criteria in the ADR are met.
-  "jules-dispatch|.local/state/jules|JULES_LANE_ENABLED"
 )
 
 # Resolve a unit's ExecStart to a real path: systemd expands %h to the user's
@@ -141,4 +138,3 @@ for base in "${installed[@]}"; do
     echo "  systemctl --user start $base.service   # run it now"
 done
 echo "  tail -f ~/.local/state/hygiene/cron.log"
-echo "  tail -f ~/.local/state/jules/dispatch.log"

@@ -42,6 +42,14 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
   personal defaults belong in private preferences. Refute, don't rubber-stamp.
 <!-- include:team-hard-rules -->
 
+## Build Standards
+
+<!-- include:build-standards -->
+
+## CI Cost
+
+<!-- include:ci-cost -->
+
 ## Public Safety
 
 - Never commit Codex auth, session logs, sqlite state, shell snapshots, caches,

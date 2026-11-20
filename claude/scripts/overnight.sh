@@ -9,13 +9,16 @@
 #   overnight.sh --deep --full-auto       # full autonomous mode (be sure!)
 #
 # Configure your repos below or set CLAUDE_REPOS env var:
-#   export CLAUDE_REPOS="~/dev/atlas ~/dev/stringer ~/dev/smss"
+#   export CLAUDE_REPOS="~/dev/beacon ~/dev/stringer ~/dev/smss"
 
 set -euo pipefail
 
-SCRIPT_DIR="$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEEP=false
 FULL_AUTO_ARGS=()
+LOG_DIR="${LOG_DIR:-$HOME/.claude/logs}"
+RUN_STAMP="$(date +%Y-%m-%d_%H%M%S)"
+SUMMARY_FILE="$LOG_DIR/overnight-summary-${RUN_STAMP}.md"
 
 # Parse args
 for arg in "$@"; do
@@ -34,7 +37,7 @@ done
 #   Or it defaults to ~/dev
 #
 # To set explicit repos:
-#   export CLAUDE_REPOS="~/dev/atlas ~/dev/stringer"
+#   export CLAUDE_REPOS="~/dev/beacon ~/dev/stringer"
 #   Or list them in ~/.claude/repos (one path per line)
 
 discover_dev_dir() {
@@ -100,34 +103,106 @@ echo "║  Started: $(date)                                    ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 
+mkdir -p "$LOG_DIR"
+{
+  printf '# Overnight Run Summary (%s)\n\n' "$RUN_STAMP"
+  printf '| Repo | Phase | Status | Exit | Note |\n'
+  printf '| --- | --- | --- | --- | --- |\n'
+} > "$SUMMARY_FILE"
+
+record_status() {
+  local repo_name="$1" phase="$2" status="$3" rc="$4" note="${5:-}"
+  printf '| %s | %s | %s | %s | %s |\n' "$repo_name" "$phase" "$status" "$rc" "$note" >> "$SUMMARY_FILE"
+}
+
+any_failures=0
+
 # Phase 1: Health checks in parallel (read-only, always safe)
 echo "═══ Phase 1: Health Checks (parallel) ═══"
 pids=()
+pid_repos=()
 for repo in "${REPOS[@]}"; do
   if [[ -d "$repo" ]]; then
     echo "→ Starting health check: $(basename "$repo")"
     "$SCRIPT_DIR/health-check.sh" "$repo" "${FULL_AUTO_ARGS[@]}" &
     pids+=($!)
+    pid_repos+=("$(basename "$repo")")
   else
     echo "⚠ Skipping $repo (not found)"
+    record_status "$(basename "$repo")" "health-check" "skipped" "0" "repo missing"
   fi
 done
 
 # Wait for all health checks
-for pid in "${pids[@]}"; do
-  wait "$pid" || echo "⚠ Health check PID $pid exited with error"
+for i in "${!pids[@]}"; do
+  pid="${pids[$i]}"
+  rname="${pid_repos[$i]}"
+  rc=0
+  wait "$pid" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "⚠ Health check for $rname (PID $pid) exited with code $rc"
+    record_status "$rname" "health-check" "failed" "$rc" "see logs"
+    any_failures=1
+  else
+    record_status "$rname" "health-check" "passed" "0" ""
+  fi
 done
 echo ""
 echo "═══ Phase 1 complete ═══"
 
 # Phase 2: Deeper work (sequential, only with --deep)
 if [[ "$DEEP" == "true" ]]; then
+  declare -A skip_phase3=()
   echo ""
   echo "═══ Phase 2: Test Coverage (sequential) ═══"
   for repo in "${REPOS[@]}"; do
     if [[ -d "$repo" ]]; then
-      echo "→ Improving tests: $(basename "$repo")"
-      "$SCRIPT_DIR/test-coverage.sh" "$repo" "${FULL_AUTO_ARGS[@]}" || true
+      rname="$(basename "$repo")"
+      status_out=""
+      if [[ "$(git -C "$repo" rev-parse --is-inside-work-tree 2>/dev/null || true)" != "true" ]] \
+        || ! status_out="$(git -C "$repo" status --porcelain --untracked-files=normal 2>/dev/null)"; then
+        echo "⚠ Skipping Phase 2 for $rname: git status inspection failed"
+        record_status "$rname" "test-coverage" "failed" "1" "git status inspection failed"
+        any_failures=1
+        skip_phase3["$repo"]=1
+        continue
+      elif [[ -n "$status_out" ]]; then
+        echo "⚠ Skipping Phase 2 for $rname: working tree has pre-existing uncommitted changes"
+        record_status "$rname" "test-coverage" "skipped" "1" "pre-existing dirty working tree"
+        any_failures=1
+        skip_phase3["$repo"]=1
+        continue
+      fi
+      echo "→ Improving tests: $rname"
+      rc=0
+      "$SCRIPT_DIR/test-coverage.sh" "$repo" "${FULL_AUTO_ARGS[@]}" || rc=$?
+      if [[ "$rc" -ne 0 ]]; then
+        echo "⚠ Test coverage failed for $rname (exit $rc)"
+        record_status "$rname" "test-coverage" "failed" "$rc" "see logs"
+        any_failures=1
+      else
+        record_status "$rname" "test-coverage" "passed" "0" ""
+      fi
+      # Isolate any uncommitted Phase 2 edits before Phase 3 runs on the repo.
+      dirty=""
+      if [[ "$(git -C "$repo" rev-parse --is-inside-work-tree 2>/dev/null || true)" != "true" ]] \
+        || ! dirty="$(git -C "$repo" status --porcelain --untracked-files=normal 2>/dev/null)"; then
+        echo "⚠ Failed to inspect Phase 2 working tree in $rname"
+        record_status "$rname" "phase2-stash" "failed" "1" "git status inspection failed"
+        any_failures=1
+        skip_phase3["$repo"]=1
+      elif [[ -n "$dirty" ]]; then
+        stash_msg="overnight-phase2-autostash-${RUN_STAMP}"
+        if git -C "$repo" stash push -u -m "$stash_msg" >/dev/null 2>&1; then
+          echo "→ Stashed uncommitted Phase 2 edits in $rname ($stash_msg)"
+          record_status "$rname" "phase2-stash" "stashed" "0" "$stash_msg"
+        else
+          echo "⚠ Failed to stash dirty Phase 2 tree in $rname"
+          record_status "$rname" "phase2-stash" "failed" "1" "dirty tree left for phase 3"
+          any_failures=1
+          skip_phase3["$repo"]=1
+        fi
+      fi
     fi
   done
 
@@ -135,12 +210,38 @@ if [[ "$DEEP" == "true" ]]; then
   echo "═══ Phase 3: Issue Fixes (sequential) ═══"
   for repo in "${REPOS[@]}"; do
     if [[ -d "$repo" ]]; then
-      echo "→ Fixing issues: $(basename "$repo")"
-      "$SCRIPT_DIR/fix-issues.sh" "$repo" "${FULL_AUTO_ARGS[@]}" || true
+      rname="$(basename "$repo")"
+      p3_dirty=""
+      p3_ok=1
+      if [[ "$(git -C "$repo" rev-parse --is-inside-work-tree 2>/dev/null || true)" != "true" ]] \
+        || ! p3_dirty="$(git -C "$repo" status --porcelain --untracked-files=normal 2>/dev/null)"; then
+        p3_ok=0
+      fi
+      if [[ -n "${skip_phase3[$repo]:-}" || "$p3_ok" -ne 1 || -n "$p3_dirty" ]]; then
+        echo "⚠ Skipping Phase 3 for $rname: working tree is not clean or Phase 2 isolation failed"
+        record_status "$rname" "fix-issues" "skipped" "1" "dirty working tree / phase 2 isolation failed"
+        any_failures=1
+        continue
+      fi
+      echo "→ Fixing issues: $rname"
+      rc=0
+      "$SCRIPT_DIR/fix-issues.sh" "$repo" "${FULL_AUTO_ARGS[@]}" || rc=$?
+      if [[ "$rc" -ne 0 ]]; then
+        echo "⚠ Issue fix failed for $rname (exit $rc)"
+        record_status "$rname" "fix-issues" "failed" "$rc" "see logs"
+        any_failures=1
+      else
+        record_status "$rname" "fix-issues" "passed" "0" ""
+      fi
     fi
   done
 fi
 
 echo ""
 echo "═══ Done: $(date) ═══"
-echo "Logs: $HOME/.claude/logs/"
+echo "Logs: $LOG_DIR"
+echo "Summary: $SUMMARY_FILE"
+if [[ "$any_failures" -ne 0 ]]; then
+  echo "⚠ One or more overnight tasks failed — see $SUMMARY_FILE" >&2
+  exit 1
+fi

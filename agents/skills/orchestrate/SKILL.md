@@ -20,9 +20,13 @@ section for the current runtime and its actual tool surface.
    when they add a real constraint or capability.
 4. Scale ceremony to risk. Keep a narrow task single-agent unless the user or
    applicable instructions explicitly require delegation; prefer a bounded
-   read-only verifier over manufactured parallel edits. Orchestrate when
-   parallelism, independent verification, or a long integration path improves
-   quality or elapsed time.
+   read-only verifier over manufactured parallel edits. Add multi-agent pre-build
+   design critique for Tier-3 changes (`>3` files across module boundaries,
+   schemas/migrations, or auth/trust/gate boundaries), while single-agent
+   planning suffices for smaller changes; all required and requested post-build
+   reviews still apply. Orchestrate
+   when parallelism, independent verification, or a long integration path
+   improves quality or elapsed time.
 
 Do not create a plan or checklist file unless the repository explicitly uses
 one. GitHub issues remain the open-work tracker when project instructions say
@@ -74,7 +78,9 @@ explicit reviewed patch without altering the user's state.
 3. For behavior changes and bugs, establish a failing test or equivalent
    reproduction before the fix when practical.
 4. Dispatch independent workstreams together, then continue useful conductor
-   work while they run.
+   work while they run. Builder lanes must run verification suites
+   synchronously in the foreground (never end a turn leaving background tests or
+   gates running) and commit or record a blocker handoff before reporting.
 5. Inspect every returned artifact and command result. Treat agent reports as
    claims until the main agent verifies the integration state.
 6. Integrate in dependency order and run a focused check after each boundary.
@@ -156,8 +162,14 @@ review does not establish browser or runtime behavior.
    artifact. Add required cross-family or specialist review for distinct risks;
    do not duplicate an ordinary final review of an unchanged artifact.
 5. Any subsequent artifact change invalidates approval: repeat affected checks
-   and required reviews. Gate exit 0 alone does not establish a completed
-   review; distinguish successful reviews from explicit exemptions.
+   and required reviews. If blocking P0/P1 findings or unapproved required
+   reviews remain unresolved after 2 post-build fix rounds, stop as blocked
+   and escalate to the operator rather than spinning an unbounded loop; once
+   all required reviews, blocking threads, and CI checks are clear, file
+   optional non-blocking P2/P3 polish as follow-up issues
+   (`harvest-codex-comments.sh`) and merge. Gate exit 0 alone does not
+   establish a completed review; distinguish successful reviews from explicit
+   exemptions.
 6. Publish, comment, merge, or perform another outward-facing action only when
    the user's request or an applicable standing authorization covers it.
 7. Persist a durable handoff or issue/PR verdict when project instructions

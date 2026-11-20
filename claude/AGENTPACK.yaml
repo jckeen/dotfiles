@@ -75,6 +75,26 @@
       "skill_format": "agent-skills"
     },
     {
+      "id": "skill:auth-boundary",
+      "type": "skill",
+      "name": "auth-boundary",
+      "description": "Checklist for building authentication into a new entry point from the first commit — auth-by-default wiring, refusing to start without a secret, named opt-outs, closed failure, and binding credentials to the host they were issued for. Use when adding or reviewing an HTTP route, IPC accept-loop, WebSocket upgrade, external-input queue consumer or mutating CLI subcommand, when code attaches a token to a URL or path read from a lockfile, manifest or other persisted config, or when the user asks \"does this need auth\" or \"is this endpoint protected\".",
+      "path": "skills/auth-boundary",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:autonomous-run",
+      "type": "skill",
+      "name": "autonomous-run",
+      "description": "Decision layer for unattended or looping work — picks between in-session work, a dynamic workflow, /loop, /goal, Monitor, a Stop hook, or a cloud scheduled task, then sets the stop condition, round cap and verification gate before launch and defines the report. Use when the user says \"run this unattended\", \"keep going until\", \"loop until done\", \"babysit this\", \"come back when it's finished\", \"overnight\", or asks which loop primitive to use. Not for loop syntax itself (/loop, /goal, /schedule, workflow-authoring cover that).",
+      "path": "skills/autonomous-run",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
       "id": "skill:branch-hygiene",
       "type": "skill",
       "name": "branch-hygiene",
@@ -88,7 +108,7 @@
       "id": "skill:changelog",
       "type": "skill",
       "name": "changelog",
-      "description": "Records what changed this session into a CHANGELOG.md at the project root — reads git log since the last entry and prepends a dated entry (What changed / Decisions made / Known issues), then commits it. Use when the user explicitly wants to log/record changes — \"update the changelog\", \"log this session\", \"add a changelog entry\", \"record what we did\". For preserving context across /clear or a new session use handoff instead; for improving your skills use session-retro.",
+      "description": "Records what changed this session into a CHANGELOG.md at the project root, or, where the repo keeps a `changelog.d/` directory, into the branch's `changelog.d/<branch-slug>.md` fragment — reads git log since the last entry and writes a dated entry (What changed / Decisions made / Known issues), then commits it. Use when the user explicitly wants to log/record changes — \"update the changelog\", \"log this session\", \"add a changelog entry\", \"record what we did\". For preserving context across /clear or a new session use handoff instead; for improving your skills use session-retro.",
       "path": "skills/changelog",
       "risk_level": "low",
       "permissions": [],
@@ -188,7 +208,7 @@
       "id": "skill:orchestrate",
       "type": "skill",
       "name": "orchestrate",
-      "description": "Full-lifecycle orchestration for comprehensive execution — selects relevant skills, delegates bounded work, then simplifies, completes documentation, verifies, reviews the final artifact, and delivers with a durable handoff. Use when you want maximum effort, to go all-in, or to orchestrate a big task end-to-end.",
+      "description": "Maximum-effort, full-lifecycle execution that plans, delegates bounded work, verifies independently, and closes the loop with docs, review and handoff. Use when the user says 'orchestrate', 'go all-in', 'max effort', 'throw everything at it', or wants a big task carried end to end with independent verification.",
       "path": "skills/orchestrate",
       "risk_level": "low",
       "permissions": [],
@@ -218,7 +238,7 @@
       "id": "skill:session-retro",
       "type": "skill",
       "name": "session-retro",
-      "description": "Runs a short retrospective that PROPOSES edits to the user's Claude Code skills — capturing a newly-found gotcha, fixing a description that didn't auto-trigger, retiring a dead skill, or extracting a reusable pattern into a new skill. Improves the TOOLSET, not the session log. Use when the user signals satisfaction at the end of real work (\"thanks\", \"thanks that worked\", \"that worked great\", \"nice\", \"perfect\", \"exactly what I needed\"), or when they explicitly run /session-retro. Always proposes and waits for confirmation — never edits skills silently. In unattended runs (/orchestrate, overnight, or /session-retro --auto), writes proposals to ~/.claude/retro-proposals/ instead of blocking.",
+      "description": "Runs a short retrospective that PROPOSES edits to the user's Claude Code skills — capturing a newly-found gotcha, fixing a description that didn't auto-trigger, retiring a dead skill, or extracting a reusable pattern into a new skill. Improves the TOOLSET, not the session log. Use when the user signals satisfaction at the end of real work (\"thanks\", \"thanks that worked\", \"that worked great\", \"nice\", \"perfect\", \"exactly what I needed\"), or when they explicitly run /session-retro. Always proposes and waits for confirmation — never edits skills silently. In unattended runs (/orchestrate with no user present, or /session-retro --auto), writes proposals to ~/.claude/retro-proposals/ instead of blocking.",
       "path": "skills/session-retro",
       "risk_level": "low",
       "permissions": [],
@@ -230,6 +250,16 @@
       "name": "simplify",
       "description": "Review recently changed code for unnecessary complexity and edit it in place to simplify — removes over-engineering, dead code, and premature abstractions while preserving behavior. Unlike review (which only reports), this applies the changes. Use after building a feature, or when the user says \"simplify this\", \"this feels over-engineered\", \"clean this up\", or \"de-engineer\".",
       "path": "skills/simplify",
+      "risk_level": "low",
+      "permissions": [],
+      "skill_format": "agent-skills"
+    },
+    {
+      "id": "skill:vercel-logs",
+      "type": "skill",
+      "name": "vercel-logs",
+      "description": "Reads full Vercel production runtime logs with the CLI flags that return complete multi-line messages across every branch. Use when debugging a Vercel production or preview error, when a runtime log line looks truncated, when logs for a deployment seem to be missing, or when the user says \"check the Vercel logs\" or \"why is prod erroring\".",
+      "path": "skills/vercel-logs",
       "risk_level": "low",
       "permissions": [],
       "skill_format": "agent-skills"
@@ -420,6 +450,15 @@
       "name": "sme-workflows",
       "description": "Knowledge postdates model training; consult before answering from memory. Expert on Claude Code dynamic workflows (Workflow tool, scripts, saved workflows, ultracode). Use when writing or reviewing a workflow script or orchestration pattern, or saving, resuming or sharing one. Workflow vs skill or hook is sme-skills.",
       "path": "agents/sme-workflows.md",
+      "risk_level": "medium",
+      "permissions": []
+    },
+    {
+      "id": "subagent:test-architect",
+      "type": "subagent",
+      "name": "test-architect",
+      "description": "Audits how a test suite is built — tests that assert source text or mock calls instead of behaviour, tests that cannot fail, pure logic covered only through slow integration paths, string-matching gates propped up by more tests — and returns a remediation plan",
+      "path": "agents/test-architect.md",
       "risk_level": "medium",
       "permissions": []
     },

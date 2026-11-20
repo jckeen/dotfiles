@@ -31,7 +31,6 @@ ENFORCE=(
   jckeen/agent-pack
   jckeen/aios
   jckeen/allora-engine
-  jckeen/atlas
   jckeen/clarity-engine
   jckeen/claude-council-review
   Keen-Media/TRNN

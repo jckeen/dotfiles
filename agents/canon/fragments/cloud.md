@@ -1,14 +1,23 @@
 # Repository guidance for cloud coding agents
 
 This is the root `AGENTS.md` for `jckeen/dotfiles`. It is written for an agent
-that arrives with no session history — Jules, a Codex cloud task, or any other
-runtime that reads `AGENTS.md` and opens a pull request. Local runtimes load
-their own fuller instruction file; this file is the part that must reach an
-agent whose only context is the checkout in front of it.
+that arrives with no session history — a Claude Code or Codex cloud session, or
+any other runtime that reads `AGENTS.md` and opens a pull request. Local
+runtimes load their own fuller instruction file; this file is the part that
+must reach an agent whose only context is the checkout in front of it.
+
+A cloud session has this checkout and nothing else: the global instruction
+file, the skills, the hooks and the local review gates are not installed
+there. CI and the pull-request review are the checks that apply, so never
+report a local gate or hook as having run.
 
 ## Working style
 
 <!-- include:working-style-core -->
+
+## Build standards
+
+<!-- include:build-standards -->
 
 ## Verifying a change
 
@@ -48,6 +57,11 @@ GENERATED file — edit its source and regenerate. Never hardcode a count,
 version, SHA, or hostname in guidance prose that CI cannot assert; point at the
 file that holds it instead. A dated record — a `CHANGELOG.md` entry, a handoff
 note — is a point-in-time statement and may state the figure it measured.
+A pull request's changelog entry is one `changelog.d/<branch-slug>.md`
+fragment (the branch name with every `/` turned to `-`); `CHANGELOG.md` is
+never edited in a pull request, except the one that folds the fragments in.
+A fragment allows no `<` placeholders (write NAME-style ones), code fences or
+HTML comments.
 
 ## Out of bounds
 

@@ -38,7 +38,7 @@ When the user runs /handoff, do the following:
 2. File USER ACTION items as `operator-action` issues in the repo they
    concern — see "Operator-action queue" below for the format and rules.
 3. Save the note to `~/.claude/handoffs/[date]-[project-name]-handoff.md` (the global Claude config directory, NOT inside the project repo). Create the directory if needed. **If the file already exists, Read it first before Writing** — this prevents the overwrite confirmation prompt.
-4. Update `CHANGELOG.md` with what happened this session. Create it if it doesn't exist. Keep entries concise — what changed and why, not how.
+4. Record what happened this session in the changelog. Where the repo keeps a `changelog.d/` directory, add or update the branch's `changelog.d/<branch-slug>.md` fragment and leave `CHANGELOG.md` alone (check it with `bash claude/scripts/assemble-changelog.sh --check` where the repo has that script; no code fences, HTML comments or `<` placeholders — write NAME-style placeholders). Otherwise update `CHANGELOG.md`, creating it if it doesn't exist. Keep entries concise — what changed and why, not how.
 5. Session-end hygiene (before committing):
    - `git worktree list` — record each task worktree as removed, or retained
      with an owner, reason, PR, and concrete follow-up command. Follow the

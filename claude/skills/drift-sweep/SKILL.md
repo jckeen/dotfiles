@@ -26,7 +26,7 @@ wins) and `BANNED[:TIER,TIER] <regex>` guard lines.
    (TODO.md, LAUNCH_CHECKLIST.md, or any file whose substance is open work
    items): for each open item run
    `gh issue create --title "<item>" --body "Migrated from <file> by drift-sweep"`;
-   move closed items worth keeping into CHANGELOG.md. Then delete the file,
+   move closed items worth keeping into the changelog (the branch's `changelog.d/` fragment where the repo keeps one, otherwise `CHANGELOG.md`). Then delete the file,
    or mark it HISTORICAL if the user wants the record kept.
 3. Ask the user for old names, parked domains, and retired hosts; add a
    `BANNED <regex>` line per answer. Propose the checkbox guard

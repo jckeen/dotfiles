@@ -24,12 +24,11 @@ CAPABILITIES = (
     "notifications",
     "docs-lookup",
     "private-memory",
-    "routine-lane",
 )
 # Mirrors the checker's own tuples: the fixture manifest must be complete for
 # every capability and runtime the checker requires, or every case fails for the
 # wrong reason.
-RUNTIMES = ("claude", "codex", "antigravity", "jules")
+RUNTIMES = ("claude", "codex", "antigravity")
 
 
 class CapabilityParityTests(unittest.TestCase):

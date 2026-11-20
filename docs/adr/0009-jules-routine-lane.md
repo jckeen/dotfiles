@@ -1,6 +1,6 @@
 # 0009. Jules as the daily-routine lane
 
-- **Status:** Paused (2026-10-19). Previously Accepted (2026-09-19, after the first live dispatch); see [Status update](#status-update-2026-10-19-paused).
+- **Status:** Retired (2026-11-10). Previously Paused (2026-10-19) and Accepted (2026-09-19, after the first live dispatch); see [Status update](#status-update-2026-11-10-retired).
 - **Date:** 2026-09-18
 
 ## Context
@@ -521,3 +521,19 @@ The Decision above is therefore paused, not reversed. `jules-dispatch.sh`, the r
 2. `claude/systemd/jules-dispatch.timer` is installed (`JULES_LANE_ENABLED=1 bash claude/systemd/install.sh`; without the opt-in the installer skips the unit and disables a copy an earlier install enabled), and the first week's `--report --post` is recorded on a tracker issue.
 3. Web-app Jules PRs either stop or are recorded in the same ledger, so the daily cap and the merge-rate rule cover them.
 
+## Status update 2026-11-10: retired
+
+Jules was shut down, so the restart criteria above can no longer be met and the
+lane is retired rather than paused. Removed in the same change:
+`claude/scripts/jules-dispatch.sh` and its test suite, the
+`claude/systemd/jules-dispatch` unit pair, the `agents/routines/` catalog, the
+`jules` runtime and the `routine-lane` capability in `agents/capabilities.json`,
+and the Jules CLI install step in `setup.sh`. `setup.sh` now disables a
+`jules-dispatch.timer` an earlier install left behind and removes its unit
+files.
+
+What stays is the root `AGENTS.md` brief this ADR introduced. It still serves
+every agent that works from a bare checkout (a Claude Code or Codex cloud
+session), and its source fragment is renamed from `fragments/jules.md` to
+`fragments/cloud.md`. Everything above this section describes files that no
+longer exist in the tree; git history holds them.

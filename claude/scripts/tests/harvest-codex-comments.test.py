@@ -2,8 +2,8 @@
 """Exercise the per-PR consolidated harvest against a stateful fake gh; never contacts GitHub.
 
 The fake keeps its issues in a JSON state file, so consecutive runs of the
-script see what earlier runs filed, exactly as the close-time workflow and the
-nightly routine see each other's issues on the real tracker.
+script see what earlier runs filed, exactly as the workflow's close-time and
+late-review runs see each other's issues on the real tracker.
 """
 
 import json
@@ -287,13 +287,13 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual(len(h.issues()), 1)
 
     def test_rerun_is_idempotent_and_new_comments_append(self):
-        """The close-time workflow and the nightly routine run the same script:
+        """The workflow's close-time and late-review runs use the same script:
         whichever runs second must neither re-file nor duplicate items."""
         h = self.harness()
         first = [comment(123)]
         calls, _ = h.run(comments=first)
         self.assertEqual([c["kind"] for c in calls], ["create"])
-        calls, result = h.run(comments=first)  # nightly backstop, nothing new
+        calls, result = h.run(comments=first)  # a later run, nothing new
         self.assertEqual(calls, [], result.stdout)
         later = first + [comment(456, body="Late finding\nwith two lines")]
         calls, _ = h.run(comments=later)  # a comment landed after the first harvest
@@ -589,6 +589,151 @@ class HarvestTests(unittest.TestCase):
 
 
 HOOK = SCRIPTS.parent / "hooks" / "PreMergeCodexHarvest.hook.sh"
+
+
+WORKFLOW = SCRIPTS.parents[1] / ".github/workflows/harvest-codex-comments.yml"
+
+
+def workflow_expr(text, key):
+    """The folded `key: >-` block of the harvest job, joined into one line."""
+    lines = text.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.strip() == f"{key}: >-")
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    body = []
+    for ln in lines[start + 1 :]:
+        if ln.strip() and len(ln) - len(ln.lstrip()) <= indent:
+            break
+        body.append(ln.strip())
+    return " ".join(b for b in body if b)
+
+
+def evaluate(expr, context):
+    """Evaluate the subset of the Actions expression language the job `if` uses
+    (context paths, string and null literals, ==, !=, &&, ||, parentheses).
+    A missing property is null, as in Actions."""
+
+    def lookup(path):
+        node = context
+        for part in path.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return None
+            node = node[part]
+        return node
+
+    tokens = re.findall(r"'[^']*'|&&|\|\||==|!=|\(|\)|null|true|false|[A-Za-z_][\w.\-]*", expr)
+    if "".join(tokens) != re.sub(r"\s+", "", expr):
+        raise ValueError(f"unsupported expression: {expr}")
+    py = []
+    for t in tokens:
+        if t == "&&":
+            py.append(" and ")
+        elif t == "||":
+            py.append(" or ")
+        elif t in ("==", "!=", "(", ")"):
+            py.append(f" {t} ")
+        elif t == "null":
+            py.append(" None ")
+        elif t in ("true", "false"):
+            py.append(f" {t.title()} ")
+        elif t.startswith("'"):
+            py.append(repr(t[1:-1]))
+        else:
+            py.append(f"lookup({t!r})")
+    # eval is safe here: every token was matched by the whitelist above and
+    # rebuilt from fixed operators, repr()'d literals and lookup() calls, so
+    # the string holds no name but lookup and runs with no builtins.
+    return bool(eval("".join(py), {"__builtins__": {}}, {"lookup": lookup}))
+
+
+class WorkflowTriggerTests(unittest.TestCase):
+    """#617: the bot often reviews after a fast auto-merge, so a review it
+    submits on a merged PR must start a harvest; nothing else may."""
+
+    REPO = "example/repo"
+    MERGED_AT = "2026-10-19T00:00:00Z"
+
+    def setUp(self):
+        self.text = WORKFLOW.read_text()
+        self.cond = workflow_expr(self.text, "if")
+
+    def eligible(self, event, pr, review_login=None, head_repo=REPO):
+        head = {"repo": {"full_name": head_repo} if head_repo else None}
+        payload = {"pull_request": dict(pr, number=7, head=head)}
+        if review_login is not None:
+            payload["review"] = {"user": {"login": review_login}}
+        github = {"event_name": event, "repository": self.REPO, "event": payload}
+        return evaluate(self.cond, {"github": github})
+
+    def test_triggers(self):
+        self.assertRegex(self.text, r"\n  pull_request:\n    types: \[closed\]\n")
+        self.assertRegex(self.text, r"\n  pull_request_review:\n    types: \[submitted\]\n")
+        self.assertNotIn("pull_request_target", self.text)
+
+    def test_close_event_harvests_merged_same_repo_prs_only(self):
+        merged = {"state": "closed", "merged": True, "merged_at": self.MERGED_AT}
+        self.assertTrue(self.eligible("pull_request", merged))
+        unmerged = {"state": "closed", "merged": False, "merged_at": None}
+        self.assertFalse(self.eligible("pull_request", unmerged))
+        self.assertFalse(self.eligible("pull_request", merged, head_repo="fork/repo"))
+        self.assertFalse(self.eligible("pull_request", merged, head_repo=None))
+
+    def test_late_bot_review_on_merged_pr_harvests(self):
+        # A review payload's pull_request is GitHub's "simple pull request":
+        # it has merged_at but no `merged` field.
+        merged = {"state": "closed", "merged_at": self.MERGED_AT}
+        self.assertTrue(self.eligible("pull_request_review", merged, BOT))
+
+    def test_other_reviews_never_harvest(self):
+        merged = {"state": "closed", "merged_at": self.MERGED_AT}
+        self.assertFalse(self.eligible("pull_request_review", merged, "jckeen"))
+        self.assertFalse(self.eligible("pull_request_review", merged, "chatgpt-codex-connector"))
+        self.assertFalse(self.eligible("pull_request_review", merged, BOT, head_repo="fork/repo"))
+        # Open PRs are codex-findings.yml's; a closed, unmerged PR has nothing to harvest.
+        self.assertFalse(
+            self.eligible("pull_request_review", {"state": "open", "merged_at": None}, BOT)
+        )
+        self.assertFalse(
+            self.eligible("pull_request_review", {"state": "closed", "merged_at": None}, BOT)
+        )
+
+    def test_concurrency_group_gates_on_the_job_if_verbatim(self):
+        group = re.search(r'group: "harvest-codex-comments-\$\{\{ (.*) \}\}"', self.text)
+        self.assertIsNotNone(group)
+        self.assertIn(
+            f"({self.cond}) && format('pr-{{0}}', github.event.pull_request.number)",
+            group.group(1),
+        )
+        self.assertIn("|| format('skip-{0}', github.run_id)", group.group(1))
+        self.assertIn("cancel-in-progress: false", self.text)
+
+    def test_token_scopes_and_checkout_are_unchanged(self):
+        perms = re.search(r"\npermissions:\n((?:  .*\n)+)", self.text).group(1)
+        self.assertEqual(
+            sorted(ln.split("#")[0].strip() for ln in perms.splitlines()),
+            ["contents: read", "issues: write", "pull-requests: read"],
+        )
+        self.assertIn("ref: ${{ github.event.pull_request.merge_commit_sha }}", self.text)
+        self.assertIn("persist-credentials: false", self.text)
+
+    def test_no_event_text_is_interpolated_into_shell(self):
+        run = self.text.split("run: |", 1)[1]
+        self.assertNotIn("${{", run)
+        self.assertNotRegex(
+            self.text, r"github\.event\.(review|comment)\.body|pull_request\.(title|body)"
+        )
+
+    def test_no_unverifiable_backstop_claim(self):
+        readme = (SCRIPTS / "README.md").read_text()
+        row = next(
+            ln for ln in readme.splitlines() if ln.startswith("| `harvest-codex-comments.sh`")
+        )
+        for name, text in (
+            ("workflow", self.text),
+            ("script", SCRIPT.read_text()),
+            ("README row", row),
+        ):
+            with self.subTest(surface=name):
+                self.assertNotRegex(text.lower(), r"backstop|nightly|docs-steward")
 
 
 class PreMergeHookTests(unittest.TestCase):

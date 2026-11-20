@@ -36,11 +36,10 @@
 # GraphQL is blocked (REST is the only hard dependency — see dedup note below).
 #
 # Callers, one logic, idempotent against each other through the dedup above:
-#   - .github/workflows/harvest-codex-comments.yml — on PR close (merged), under
-#     GITHUB_TOKEN: the primary capture (#555). Auto-merge lands after CI, by
-#     which time the bot has normally reviewed.
-#   - nightly-docs-steward routine — cloud backstop for comments that land
-#     later; those append to the same issue.
+#   - .github/workflows/harvest-codex-comments.yml, under GITHUB_TOKEN, for
+#     merged same-repo PRs: once at close (#555), and again on every review
+#     the bot submits after the merge (#617), so comments that land after a
+#     fast auto-merge append to the same issue.
 #   - PreMergeCodexHarvest.hook.sh — in-session, warn-only, at `gh pr merge`
 #     time. Under `--auto` it runs before the bot has reviewed, so it usually
 #     finds nothing and says the close-time harvest will file it.
@@ -481,17 +480,17 @@ if [[ -n "$existing_num" ]]; then
   continued=true
   # Re-read the live body (not the prefetched copy) so an operator's ticks and
   # edits since the prefetch survive the rewrite, and re-check every marker
-  # against it: a concurrent harvest (the close-time workflow racing the
-  # nightly routine) may have appended the same comments since the prefetch.
+  # against it: a concurrent harvest (a workflow run racing the in-session hook
+  # or a manual run) may have appended the same comments since the prefetch.
   # A failed read writes nothing.
   #
   # Issues have no conditional (If-Match) PATCH, so a writer racing the window
   # between this read and the PATCH below can still drop an item or an
   # operator's tick. The design converges anyway: dedup reads markers from the
   # bodies, so a dropped item is simply absent and the next run appends it
-  # again (the tests pin this). The close-time workflow serializes its runs
-  # for one PR with a concurrency group; only a nightly run landing in the
-  # same second can race it.
+  # again (the tests pin this). The workflow serializes its close-time and
+  # late-review runs for one PR with a concurrency group; only a run outside
+  # it (the hook, or a manual run) landing in the same second can race one.
   if ! current="$(gh api "repos/$REPO/issues/$existing_num" --jq '.body // ""' 2>/dev/null)"; then
     warn "  ⚠ could not read #$existing_num to append $new_count item(s) — nothing written."
     exit 0

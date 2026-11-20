@@ -222,20 +222,59 @@ user_scoped_plugins() {
   '
 }
 
+# manifest_per_project_plugins — read a plugins.txt manifest on stdin, print the
+# `<plugin>@<marketplace>` id of every active line under a `# [per-project]`
+# marker, one per line (#720).
+#
+# `claude plugin install` ENABLES the plugin in the user-level `enabledPlugins`
+# map, but [per-project] plugins must be enabled only by a project's own
+# .claude/settings.json (#214). setup.sh §3b and sync-plugins.sh therefore run
+# `claude plugin disable --scope user <id>` right after installing each id
+# this prints, so the manifest's section marker stays the one source of truth.
+# Section rules match PluginDriftCheck.hook.ts: lines before any marker are
+# global, a marker applies until the next one, comments and whitespace (CR
+# included) are stripped.
+manifest_per_project_plugins() {
+  awk '
+    match(tolower($0), /^[[:space:]]*#[[:space:]]*\[(global|per-project)\]/) {
+      # Only the leading marker decides: "# [global] (unlike [per-project])"
+      # is a global marker, as PluginDriftCheck.hook.ts reads it.
+      per = (substr(tolower($0), RSTART, RLENGTH) ~ /\[per-project\]/)
+      next
+    }
+    {
+      sub(/#.*/, ""); gsub(/[[:space:]]/, "")
+      if (per && $0 != "") print
+    }
+  '
+}
+
 # dotfiles_dev_dir <dotfiles-dir> — the directory that holds the sibling
 # repos (claude-memory, codex-memory, agy-memory). DOTFILES_DEV_DIR overrides
 # the derivation: the test suites run setup.sh and the check-* scripts against
 # a throwaway HOME and must never reach the operator's real siblings when the
-# checkout sits directly under ~/dev (#701). The override must be absolute;
-# one trailing slash is trimmed, and "/" stays "/". Otherwise the checkout's
-# parent, as before. Shared by setup.sh and the three check-* scripts so the
-# audit can never look somewhere the install did not.
+# checkout sits directly under ~/dev (#701). The override must be an absolute
+# single-line path; trailing slashes are trimmed while "/" stays "/".
+# Otherwise the checkout's parent, as before. Shared by setup.sh and the three
+# check-* scripts so the audit can never look somewhere the install did not.
 dotfiles_dev_dir() {
   if [ -n "${DOTFILES_DEV_DIR:-}" ]; then
     case "$DOTFILES_DEV_DIR" in
-      /) printf '/\n' ;;
-      /*) printf '%s\n' "${DOTFILES_DEV_DIR%/}" ;;
-      *) echo "ERROR: DOTFILES_DEV_DIR must be an absolute path (got: $DOTFILES_DEV_DIR)" >&2; return 1 ;;
+      *$'\n'*)
+        echo "ERROR: DOTFILES_DEV_DIR must not contain newlines" >&2
+        return 1
+        ;;
+      /*)
+        local d="$DOTFILES_DEV_DIR"
+        while [ "$d" != "/" ] && [ "${d%/}" != "$d" ]; do
+          d="${d%/}"
+        done
+        printf '%s\n' "$d"
+        ;;
+      *)
+        echo "ERROR: DOTFILES_DEV_DIR must be an absolute path (got: $DOTFILES_DEV_DIR)" >&2
+        return 1
+        ;;
     esac
   else
     dirname "$1"

@@ -89,7 +89,7 @@ while [[ $# -gt 0 ]]; do
   if [[ "$1" == -o ]]; then output=$2; shift; fi
   shift
 done
-printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],"next_steps":[]}' > "$output"
+printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],"next_steps":[],"coverage":{"status":"complete","examined":["fixture"],"limitations":[]}}' > "$output"
 """,
         )
         for phase in ("tests", "review", "confirmation"):
@@ -180,7 +180,7 @@ while [[ $# -gt 0 ]]; do
   if [[ "$1" == -o ]]; then output=$2; shift; fi
   shift
 done
-printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],"next_steps":[]}' > "$output"
+printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],"next_steps":[],"coverage":{"status":"complete","examined":["fixture"],"limitations":[]}}' > "$output"
 """,
         )
         alternate = t.command(
@@ -350,7 +350,7 @@ while [[ $# -gt 0 ]]; do
 done
 cat >/dev/null
 git --git-dir "$DESTINATION_REMOTE" symbolic-ref refs/heads/feature refs/heads/main
-printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],"next_steps":[]}' > "$output"
+printf '%s\\n' '{"verdict":"approve","summary":"Fixture approval","findings":[],"next_steps":[],"coverage":{"status":"complete","examined":["fixture"],"limitations":[]}}' > "$output"
 """,
         )
         result = t.run_wrapper(auto=False, stdin="y\n")

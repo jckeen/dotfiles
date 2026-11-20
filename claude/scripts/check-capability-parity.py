@@ -12,9 +12,7 @@ from pathlib import Path
 import shutil
 import sys
 
-# Jules is a cloud runtime: it installs nothing locally, so most of its
-# dispositions are "unsupported" by design (see agents/capabilities.json).
-RUNTIMES = ("claude", "codex", "antigravity", "jules")
+RUNTIMES = ("claude", "codex", "antigravity")
 CAPABILITIES = (
     "review",
     "simplify",
@@ -27,7 +25,6 @@ CAPABILITIES = (
     "notifications",
     "docs-lookup",
     "private-memory",
-    "routine-lane",
 )
 KINDS = {"skill", "cli", "plugin", "mcp", "hook", "git-hook", "instruction", "unsupported"}
 

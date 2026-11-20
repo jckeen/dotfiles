@@ -4,7 +4,7 @@
 
 **📖 Browsable docs:** everything in this repo is also published as a searchable site at **[jckeen.github.io/dotfiles](https://jckeen.github.io/dotfiles/)** — rebuilt on every push to `main`.
 
-A one-command setup that gets you from a blank machine to a coordinated Claude Code, Codex, and Gemini-powered Antigravity environment with sane defaults, safety hooks, multi-session tooling, and a 24-agent pack of code reviewers and subject-matter experts. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
+A one-command setup that gets you from a blank machine to a coordinated Claude Code, Codex, and Gemini-powered Antigravity environment with sane defaults, safety hooks, multi-session tooling, and a 25-agent pack of code reviewers and subject-matter experts. Built for **macOS** and **Windows (via WSL2 + Ubuntu)**, with Linux supported as a side effect.
 
 This is opinionated — it's how *I* (and now hopefully you) switch between Claude Code, Codex, and Antigravity day-to-day. Clone it, run `./setup.sh`, and skip months of trial-and-error.
 
@@ -23,8 +23,8 @@ After setup, you don't have to remember much. Open a terminal and:
 
 - **`cc` / `cx` / `agy`** — the three launchers share project selection, fast-forward-only repo sync, and runtime health checks. `cc` safely publishes approved Claude memory paths; `cx` reapplies portable Codex defaults and reconnects opted-in Remote Control; `agy` launches the Gemini-powered Antigravity CLI. Ordinary checkouts fast-forward; linked worktrees are fetched, never pulled. Repository and Claude memory sync failures warn and continue with local state. Required runtime health checks still stop the launch on failure.
 - **A live status line** — model name, context-bar (green/yellow/red), git branch, lines added/removed, session cost in USD. You always know how warm your context is, what branch you're on, and what the session has cost — without asking.
-- **17 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/orchestrate` (full-lifecycle max-effort mode), `/branch-hygiene`, `/jj` (jujutsu driver), `/session-retro` (improve your own skills), `/drift-sweep` (doc-contract bootstrap + drift audit), `/antigravity-review` (Gemini second-opinion review gate), `/review-gates` (which review lane a change needs, handoff payload, verdict persistence). Type the verb, get the workflow.
-- **A 24-agent pack** — reviewers (`qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and more), utility agents, and six `sme-*` subject-matter experts you delegate questions about Claude Code tooling newer than the model's training. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
+- **20 slash commands** that cover the whole loop — `/kickoff` (new project), `/review` (quality + security), `/simplify` (de-engineer), `/fix-issue` (GitHub issue end-to-end), `/handoff` (clean session transition), `/changelog`, `/log-error`, `/commit-push-pr`, `/claude-server`, `/decompose`, `/orchestrate` (full-lifecycle max-effort mode), `/autonomous-run` (pick the loop primitive, stop condition and cap for unattended work), `/branch-hygiene`, `/jj` (jujutsu driver), `/session-retro` (improve your own skills), `/drift-sweep` (doc-contract bootstrap + drift audit), `/antigravity-review` (Gemini second-opinion review gate), `/review-gates` (which review lane a change needs, handoff payload, verdict persistence). Type the verb, get the workflow.
+- **A 25-agent pack** — reviewers (`qa-lead`, `security-reviewer`, `frontend-architect`, `backend-architect`, `ux-reviewer`, `growth-strategist`, `trust-safety`, `perf-accessibility`, and more), utility agents, and six `sme-*` subject-matter experts you delegate questions about Claude Code tooling newer than the model's training. Each runs in its own isolated context and reports back without polluting your main session. Three-phase orchestration (Product → Architecture → Launch) for serious reviews.
 - **Safety hooks that can't be forgotten** — auto-format on edit (prettier, black, rustfmt, gofmt), conventional-commit enforcement, push notifications when Claude is waiting on you, and a `StripProjectPermissions` hook that prevents per-project permission creep from overriding your global allowlist.
 - **Multi-session tooling** — open 3, 5, or 8 Claude sessions across different projects in a single Windows Terminal window via `cc-pane`/`cc-tab`/`cc-multi` (bash) or `ccgrid`/`cctab`/`ccpane` (PowerShell). Each session gets the full `cc` treatment — repo sync, tab colors, health check.
 - **Agent-neutral helpers** — `wsl6` opens a 3×2 grid of plain WSL shells (no Claude/Codex coupling) for ad-hoc multi-shell work.
@@ -79,7 +79,6 @@ gh auth login          # GitHub CLI — choose HTTPS + browser
 claude                 # Sign in to Claude (or 'claude auth login' if it doesn't prompt)
 ccw                    # Optional: sign in a second (work) Claude account — see CLAUDE-GUIDE
 codex login            # Optional: sign in for Codex CLI
-jules login            # Optional: sign in for the Jules CLI (cloud routine lane)
 ```
 
 You're done. Open a new PowerShell 7 window and try `wsl6`, or run `cc` inside WSL.
@@ -115,7 +114,6 @@ cd dotfiles
 gh auth login
 claude
 codex login            # Optional
-jules login            # Optional
 ```
 
 > **Why macOS?** Native Unix toolchain, no VM overhead, excellent terminal options (Terminal.app, iTerm2, Ghostty, Warp — pick your favorite). The setup script handles macOS-specific things (osxkeychain credential helper, brew package install, zsh `.bash_aliases` sourcing) automatically.
@@ -135,7 +133,6 @@ cd dotfiles
 gh auth login
 claude
 codex login            # Optional
-jules login            # Optional
 ```
 
 > **Node.js first:** unlike macOS, `setup.sh` does not auto-install Node on
@@ -245,8 +242,8 @@ Once inside Claude:
 |---------|-------------|
 | `wsl6` | Opens a Windows Terminal tab with a 3×2 grid of plain WSL shells (agent-neutral) |
 | `ccprojects` | Lists projects available under your WSL `~/dev/` |
-| `ccgrid dotfiles atlas stringer` | One new tab, three split panes, each running `cc <project>` inside WSL |
-| `cctab dotfiles atlas` | One tab per project, each running `cc <project>` inside WSL |
+| `ccgrid dotfiles beacon stringer` | One new tab, three split panes, each running `cc <project>` inside WSL |
+| `cctab dotfiles stringer` | One tab per project, each running `cc <project>` inside WSL |
 | `ccpane dotfiles` | Splits the current Windows Terminal window with `cc dotfiles` |
 
 These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerShell profile(s)? [Y/n]" — answer Y). The installer wires both PS 5.1 and PS 7 profiles, so the helpers work in whichever you prefer. **If you missed the prompt or installed before this fix, just run `dotfiles-update` from WSL.** Manual install, distro/dev-dir overrides, and more: [docs/WINDOWS.md](docs/WINDOWS.md).
@@ -258,7 +255,7 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 `setup.sh` installs CLI tools, wires the public and private layers for each selected runtime (all three unless you [choose fewer](#choosing-agent-services)), and configures platform-specific bits (audio on WSL, credential helpers per OS, etc.). Expand below for the full inventory.
 
 <details>
-<summary><strong>📦 Tools installed</strong> (gh, git, node, jq, tmux, claude, codex, agy, jules, bun)</summary>
+<summary><strong>📦 Tools installed</strong> (gh, git, node, jq, tmux, claude, codex, agy, bun)</summary>
 
 <br>
 
@@ -271,7 +268,6 @@ These are auto-installed by `setup.sh` on WSL (it asks "Install into your PowerS
 | `tmux` | Detachable sessions for the opt-in `cct` launcher | Homebrew / apt |
 | `claude` | Claude Code CLI | SHA-256-pinned official native installer |
 | `codex` | OpenAI Codex CLI | npm |
-| `jules` | Google Jules CLI — the cloud routine lane (ADR-0009, paused 2026-10-19); `jules login` for interactive use, an API key file for the daily dispatcher | npm |
 | `agy` | Google Antigravity CLI (Gemini agent runtime) | SHA-256-pinned official installer; release payload checksum-verified by the vendor installer |
 | `bun` | Runtime for `*.hook.ts` hooks | Pinned GitHub release (`BUN_VERSION` in `setup.sh`), SHA-256-verified against the release's `SHASUMS256.txt` |
 
@@ -291,7 +287,7 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Claude instructions** | `claude/CLAUDE.md` | Global rules Claude follows in every session (symlinked into `~/.claude/CLAUDE.md`; generated from `agents/canon/` per ADR-0007 — edit the sources, not the file) |
 | **Settings** | `~/dev/claude-memory/settings.json` | Private permissions, MCP servers, plugins (symlinked into `~/.claude/` by claude-memory's `bootstrap.sh`) |
 | **Settings template** | `claude/settings.example.json` | Public `hooks` + `statusLine` registrations; `setup.sh` copies it to `~/.claude/settings.json` when neither that file nor `claude-memory` exists (never symlinked, never overwrites). The hooks it omits are listed in `claude/settings-optout.txt`; a full private setup adds `"CHECK_HOOKS_REQUIRE_ALL": "1"` to its settings `env` to require every hook |
-| **Agent Pack** | `claude/AgentPack.md` | 24-agent pack: review orchestra plus subject-matter experts (loaded on-demand, not symlinked) |
+| **Agent Pack** | `claude/AgentPack.md` | 25-agent pack: review orchestra plus subject-matter experts (loaded on-demand, not symlinked) |
 | **Status line** | `claude/statusline.sh` | Shows model, context %, git branch, lines changed, session cost |
 | **Commit hook** | `claude/hooks/conventional-commit.sh` | Enforces `type: description` commit message format |
 | **Format hook** | `claude/hooks/format-on-edit.sh` | Auto-formats files after edits (prettier, black, rustfmt, gofmt) |
@@ -300,11 +296,10 @@ Public Claude config pieces are **symlinked** from this repo to `~/.claude/`, so
 | **Other hooks** | `claude/hooks/*` | Worktree guard, symlink repair, plugin/hygiene drift, stale-SHA warning, handoff reminder, pre-merge Codex harvest — full wired-state table in [CLAUDE-GUIDE → Hooks](CLAUDE-GUIDE.md#hooks) |
 | **Plugin manifest** | `claude/plugins.txt` | Read by `setup.sh` (§3b) and `sync-plugins.sh` to auto-install plugins (`plugin@marketplace`, one per line) at **user scope**; a `--scope project` or `--scope local` install belongs to that checkout and never satisfies a manifest entry; deliberately not symlinked (listed in `claude/nolink.txt`) |
 | **Skills** | `claude/skills/*/` | Claude slash commands (see below); each skill directory is one symlink at `~/.claude/skills/<name>`, so supporting files (`references/`, `scripts/`, `assets/`, `.claude-plugin/`) deploy with it |
-| **Subagents** | `claude/agents/*.md` | 24 specialized agents (reviewers, utilities, subject-matter experts) |
+| **Subagents** | `claude/agents/*.md` | 25 specialized agents (reviewers, utilities, subject-matter experts) |
 | **Shell aliases** | `.bash_aliases` | `cc`, `pull-all`, worktree shortcuts; launchers re-source this file when it changed since the shell started |
 | **Codex guidance** | `codex/AGENTS.md` | Public-safe global Codex working rules (generated from `agents/canon/` per ADR-0007) |
-| **Cloud-agent brief** | `AGENTS.md` (repo root) | The short working contract an agent reads from the checkout itself when it has no session history — Jules, a Codex cloud task (generated from `agents/canon/` per ADR-0007) |
-| **Routine catalog** | `agents/routines/*.md` | Standing prompts for the cloud routine lane, one file per routine, with a frontmatter contract the dispatcher enforces (ADR-0009) |
+| **Cloud-agent brief** | `AGENTS.md` (repo root) | The short working contract an agent reads from the checkout itself when it has no session history — a Claude Code or Codex cloud session (generated from `agents/canon/` per ADR-0007) |
 | **Shared agent skills** | `agents/skills/*/SKILL.md` | Agent-neutral workflows, directory-linked into Codex's documented `~/.agents/skills/` user scope (with legacy `~/.codex/skills/` links retained for older clients) |
 | **Codex config examples** | `codex/*.toml.example` | Templates only; live `~/.codex/config.toml` stays local |
 | **Antigravity guidance** | `antigravity/GEMINI.md` | Public-safe global Antigravity (agy) rules (symlinked into `~/.gemini/config/GEMINI.md`; generated from `agents/canon/` per ADR-0007) |
@@ -347,9 +342,11 @@ templates, and the golden rules. What follows is the short version.
 | `cx [project]` | Same ergonomics for Codex; reuses a listening shared server when Remote Control is enabled and otherwise launches locally; optional [user service](codex/README.md#automatic-startup-on-linux-and-wsl) handles automatic startup |
 | `cc-multi <p1> <p2> …` | Multiple projects, one Windows Terminal tab each, fully synced |
 | `cct [project]` | `cc` inside a named tmux session, so the process and its Remote Control link survive a closed terminal |
+| `rc-start [--hold]` | Starts `claude remote-control` in a detached tmux session `rc` (with bun on its PATH), from `~/dev` (`RC_START_DIR` overrides). The session ends when Remote Control exits (logged to `~/.local/state/rc-start.log`), so running it again restarts it. `--hold` blocks, so the `wsl.exe` of a Windows boot task keeps WSL running |
 | `dotfiles-update` | Pull latest dotfiles + re-run setup (idempotent — safe anytime) |
 | `/handoff` | Capture session state before `/clear` or stopping |
 | `/orchestrate` | Full-lifecycle max-effort mode — worktrees, parallel agents |
+| `/autonomous-run` | Unattended or looping work — picks `/loop`, `/goal`, a workflow or `/schedule`, sets the stop condition and cap |
 | `/fix-issue N` | GitHub issue end-to-end: investigate → test → fix → PR |
 
 Most other slash commands **auto-invoke** when their triggers match — you
@@ -373,7 +370,7 @@ push-time Codex review gate that blocks on critical findings.
   Tables in [CLAUDE-GUIDE](CLAUDE-GUIDE.md#worktrees--multi-session); the
   PowerShell side (`wsl6`, `ccgrid`, `cctab`, `ccpane`, manual install, distro
   overrides) lives in [docs/WINDOWS.md](docs/WINDOWS.md).
-- **The 24-agent pack** — spawn by name ("Use the qa-lead agent on
+- **The 25-agent pack** — spawn by name ("Use the qa-lead agent on
   this feature"), in groups, or as a three-phase full review (Product →
   Architecture → Launch). `/review` and `/simplify` use them automatically.
   Roster and orchestration: [`claude/AgentPack.md`](claude/AgentPack.md).
@@ -550,7 +547,6 @@ This repo is designed to be forked and adapted. Here's what to edit vs. leave al
 **Edit these only with public-safe content:**
 - `claude/AgentPack.md` — add, remove, or modify review agents
 - `agents/canon/` — the instruction sources (ADR-0007): shared cross-agent rules in `CANON.md`, per-tool voice in `fragments/`. Every instruction file named in that script's target map — including the root `AGENTS.md` — is generated from here by `claude/scripts/gen-instruction-files.sh`; never edit them directly
-- `agents/routines/*.md` — the cloud routine lane's standing prompts (ADR-0009); `claude/scripts/jules-dispatch.sh --dry-run` shows what a day would dispatch
 - `agents/skills/*/SKILL.md` — reusable agent-neutral workflows (Codex + Antigravity)
 - `codex/config.toml.example` — example Codex config only
 - `.bash_aliases` — your shell shortcuts
@@ -600,13 +596,14 @@ dotfiles/
 ├── setup.sh                # Cross-platform bootstrap — installs tools, wires every symlink
 ├── check-claude.sh         # Health checks (also check-codex.sh, check-antigravity.sh)
 ├── git-hygiene.sh          # Repo/branch hygiene (also gh-bootstrap.sh, hygiene-status.sh, lib-symlinks.sh)
+├── rc-start                # Remote Control in a detached tmux session (linked into ~/.local/bin)
 ├── README.md               # This file (also CLAUDE-GUIDE.md, CHANGELOG.md, ROADMAP.md, LICENSE)
 ├── mkdocs.yml              # Docs-site config for the published Pages site
 ├── docs/                   # ADRs, Windows deep-dive, branch-protection notes
 ├── claude/                 # Claude Code layer — CLAUDE.md, hooks, skills, agents, scripts, statusline
 ├── codex/                  # Public-safe Codex layer — AGENTS.md, config example, Codex-only skills
 ├── antigravity/            # Public-safe Antigravity (agy) layer — GEMINI.md, hooks, agy-only skills
-├── agents/                 # Agent-neutral shared skills + the cloud routine catalog
+├── agents/                 # Agent-neutral shared skills, instruction canon, capability matrix
 └── windows/                # PowerShell helpers — wsl6, ccgrid/cctab/ccpane
 ```
 

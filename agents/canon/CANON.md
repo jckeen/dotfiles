@@ -1,7 +1,7 @@
 # Canonical shared agent rules (ADR-0007)
 
 This file is the single source for the rules every agent on this config —
-Claude Code, Codex, Antigravity, and the cloud routine lane (ADR-0009) — must
+Claude Code, Codex, Antigravity, and cloud sessions of either — must
 agree on word-for-word. Native import mechanisms are not universal (only Claude
 Code resolves `@` imports; Codex and Antigravity have none — evidence in
 ADR-0007), so the instruction files are **generated build artifacts**:
@@ -16,7 +16,7 @@ ADR-0007), so the instruction files are **generated build artifacts**:
 - The root `AGENTS.md` is the short brief a cloud agent reads from the checkout
   itself, so it carries only the rules that survive without session history. Its
   concepts are not held in phrase parity with the three local files; byte
-  currency against `fragments/jules.md` is what CI asserts.
+  currency against `fragments/cloud.md` is what CI asserts.
 
 Each block is delimited by `<!-- canon:ID -->` … `<!-- /canon:ID -->`; a
 fragment pulls it in with a line of the exact form `<!-- include:ID -->`.
@@ -44,6 +44,13 @@ the concepts stay present in all three generated files.
 - Keep edits scoped to the requested behavior.
 - Verify meaningful changes with the smallest useful test or static check.
 - Report any test you could not run.
+- A test asserts behavior: call the code and check its result. Never assert on
+  source text, or only that a mock was called. Use the lowest test level that
+  proves the change, and a fake over a mock.
+- Prefer the real engine or parser over a hand-rolled regex or grammar scanner
+  in tests: let the target runtime evaluate or parse the artifact (for
+  example, PostgreSQL `PREPARE` and `pg_locks` instead of regex-scanning SQL)
+  so grammar edge cases cannot slip past the test.
 <!-- /canon:working-style-core -->
 
 ## Two-floor grounding (all three; ADR-0006, #219)
@@ -82,4 +89,76 @@ Claude Code carries the same ownership and verification rules in its fragment.
   verification, and independent-review rules still apply: with one selected
   runtime, independent review is a fresh-context session or subagent of that
   runtime, and the verdict says so.
+- **Proportional pre-build critique and post-build escalation:** add independent
+  pre-build design critique (across selected services, or a fresh-context
+  subagent when one runtime is selected) before implementing Tier-3 changes (`>3` files
+  across module boundaries, schemas/migrations, or auth/trust/gate boundaries),
+  while single-agent planning suffices for smaller changes; this never alters or
+  exempts any required or task-requested review. Re-run affected checks and
+  required reviews after every fix. If blocking P0/P1 findings or unapproved
+  required reviews remain unresolved after 2 fix rounds, stop as blocked and
+  escalate to the operator rather than merging; once all required reviews,
+  blocking threads, and CI checks are clear, harvest optional non-blocking
+  P2/P3 follow-ups into issues via `harvest-codex-comments.sh` and merge.
+- **Synchronous verification and delivery ownership:** never end a turn while a
+  verification test or review gate runs in the background — execute checks in
+  the foreground (`BASH_DEFAULT_TIMEOUT_MS=600000`) and either commit/push or
+  record an explicit blocker handoff before stopping.
 <!-- /canon:team-hard-rules -->
+
+## CI cost (every local runtime)
+
+<!-- canon:ci-cost -->
+- **Hosted CI minutes are a budget, in every repo.** The target: the full
+  suite runs once per merge and every other run is cheap. With a merge queue
+  that one run is the queue's. Without one it is the pull request's required
+  run, and the default branch may skip a job only when that same job already
+  passed on the identical tree; a job the pull request did not run (one that
+  needs protected secrets, or runs only on the default branch) still runs
+  there. When the task is CI, apply the measures: cancel
+  superseded pull-request runs, group routine dependency updates, and skip a
+  job only by a path rule, behind one always-running required check that
+  fails unless every job passed or was skipped by that rule. When the task is
+  something else, change no CI: file an issue. Required checks, branch
+  protection and merge queues are the operator's decision: propose, never
+  change. Never save minutes by weakening what gates a merge.
+<!-- /canon:ci-cost -->
+
+## Build standards (every runtime, cloud included; ADR-0010)
+
+The shape of the code, in every language. The numbers live in each repo's lint
+config, never here. Which shapes a tool can check and which need a reviewer is
+in ADR-0010.
+
+<!-- canon:build-standards -->
+- **Build standards hold in every language (ADR-0010).** Each is enforced by
+  lint where the repo has a rule for it and by review where it has none; the
+  repo's config holds the numbers.
+  - *Size budget:* where the repo's config sets a line budget, a file over it
+    may not grow. A change that would grow it extracts just enough of the
+    code it is editing to keep the file at its current length; that
+    extraction is part of the change, and any wider split is its own change.
+    No configured budget, no size rule.
+  - *Contracts at the boundary:* data entering the application from outside
+    (a request, a webhook, model output, a file, the environment) is validated
+    once, where it enters, by the language's contract mechanism: a runtime
+    schema with the static type derived from it, where the language has one.
+    Internal calls and data already validated are not boundaries.
+  - *Explicit state:* a feature with a lifecycle models it as a tagged union
+    or a transition table, never as loose booleans or one type with many
+    optional fields. A feature with no lifecycle gets no state machine.
+  - *Pure core, injected edges:* domain logic takes its dependencies and the
+    current time as arguments instead of importing network, disk, database or
+    clock. Adapters and orchestration, whose job is the I/O, live in their
+    own modules.
+  - *No type escape hatches:* no `any`-equivalent and no unchecked cast.
+    Narrow with a check or a parse.
+  - *Fakes over mocks:* test domain behaviour against an in-memory
+    implementation of the port, not by spying on which method was called.
+    Rules about who may import what belong in the linter, not the test runner.
+  - *Ratchet:* in a repo that has recorded its baseline, existing violations
+    may only decrease and a new file meets every rule. In one that has not,
+    new files and new functions meet these; an edit inside existing code
+    follows that code's current shape, and nothing existing is rewritten to
+    conform.
+<!-- /canon:build-standards -->

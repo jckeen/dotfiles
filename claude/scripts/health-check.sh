@@ -7,7 +7,7 @@
 #   health-check.sh /path/to/repo --max-turns 10
 #
 # To run across all repos:
-#   for repo in ~/dev/atlas ~/dev/stringer ~/dev/smss; do
+#   for repo in ~/dev/beacon ~/dev/stringer ~/dev/smss; do
 #     health-check.sh "$repo" &
 #   done; wait
 

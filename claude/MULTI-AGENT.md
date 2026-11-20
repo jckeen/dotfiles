@@ -11,8 +11,9 @@ byte-currency in CI.
 
 The team coordinates through **artifacts in the repo, not a shared chat**: the
 instruction layer + skills (loaded identically via the pack), GitHub issues (the
-only open-work tracker), `handoff` notes + `CHANGELOG.md`, and git itself. Keep
-those honest and the team works even though the agents never talk to each other.
+only open-work tracker), `handoff` notes + `CHANGELOG.md` and unassembled
+`changelog.d/` fragments, and git itself. Keep those honest and the team works
+even though the agents never talk to each other.
 
 ## Roles
 
@@ -64,6 +65,27 @@ invalidates approval. Repeat affected checks and review after fixes, then
 validate the private review receipt immediately before shipping. Exit 0 alone
 is not proof of completed review; report tier/no-diff exemptions separately.
 
+### Proportional pre-build critique & post-build escalation
+
+- **Pre-build design critique scope:** add independent pre-build design
+  critique across selected services (or a fresh-context session/subagent when
+  only one runtime is selected, per `setup.sh --show-services`) before
+  implementing Tier-3 changes (`>3` files across module boundaries,
+  schemas/migrations, or auth/security/gate boundaries); use single-agent
+  planning for smaller changes. Pre-build planning scope never exempts a change
+  from required post-build gate, specialist, or cross-family security reviews.
+- **Post-build escalation & non-blocking harvest:** re-run affected checks and
+  required reviews after every fix. Because a green `codex-review` check only
+  indicates review completion, verify that all blocking review threads are
+  resolved too. If P0/P1 blockers or unapproved required reviews remain
+  unresolved after 2 fix rounds, stop as blocked and escalate to the operator
+  rather than merging; once required reviews, blocking threads, and CI checks
+  are clear, run `harvest-codex-comments.sh` to file optional P2/P3 polish as
+  follow-up issues and merge.
+- **Synchronous verification:** never end a turn while a test suite or review
+  gate runs in the background; execute verification commands synchronously in
+  the foreground and commit/push or write a blocker handoff before stopping.
+
 ## Proportionality: gate tiers (#212) and review lanes (ADR-0008)
 
 Not every diff earns the full adversarial tax. Both review gates
@@ -72,8 +94,9 @@ Not every diff earns the full adversarial tax. Both review gates
 changed-path match against risk surfaces — before dispatching any reviewer:
 
 - **Tier 1 (reduced):** docs-only diffs at or under BOTH captured ceilings — 200
-  lines (`GATE_TIER1_MAX_LINES`) and 65536 bytes, because one 200,000-byte line
-  is a 1-line diff. The byte ceiling has no environment knob on purpose: every
+  lines (`GATE_TIER1_MAX_LINES`) and the byte ceiling `TIER1_MAX_BYTES` in
+  `claude/scripts/review-receipt.py`, because one 200,000-byte line is a
+  1-line diff. The byte ceiling has no environment knob on purpose: every
   caller inherits `review-receipt.py`'s default, so the gates and the shipping
   wrapper cannot disagree about it. The gate may skip, logging a `tier-1 skip`
   line. Force the full pass anyway with `GATE_FORCE_FULL=1`.
@@ -175,8 +198,15 @@ applies the label itself when a bot finding's path matches the guard regex.
 The operator drains that label in one pass — weekly, or when reading the next
 handoff: apply the queued patches on one branch, run the required gate once with
 the override flag (independent review already recorded on each issue), open one
-PR, and let its `Closes` lines retire the issues. One gated commit for the whole
-inbox, instead of one human command per item.
+PR, and let its closing lines retire the issues — one `Closes #N` per issue,
+because GitHub closes only the first number of a `Closes #1, #2` list. One
+gated commit for the whole inbox, instead of one human command per item.
+
+A security fix does not wait for that batch. An `instruction-surface` issue
+that is also a security finding (a sandbox escape, a gate that can be bypassed,
+a credential exposure) carries the `security` label and its own patch, and the
+operator lands it on its own branch as soon as it is reviewed. The weekly pass
+is for wording and ordinary gate fixes, where a week's delay costs nothing.
 
 ## Handoff payload
 
@@ -221,7 +251,8 @@ and sandbox settings. Consult `claude/scripts/antigravity-review-gate.sh` and
 `claude/scripts/gate-lib.sh` for the executable invocation and validation rules.
 A matching dispatch label does not establish actual per-run model identity.
 
-Shipping uses the applicable `commit-push-pr` skill. Ask which lane the diff
+Shipping uses the applicable `commit-push-pr` skill if available; otherwise
+the steps below. Ask which lane the diff
 requires, then run **that** gate with `--require` after the last commit;
 degraded or failed execution supplies no approval:
 

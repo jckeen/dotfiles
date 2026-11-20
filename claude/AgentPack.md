@@ -1,6 +1,6 @@
 # Agent Pack — Multi-Agent Orchestra
 
-A team of 24 specialized subagents, each running in its own isolated context. Spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
+A team of 25 specialized subagents, each running in its own isolated context. Spawn the relevant agents in parallel — they investigate independently and report back without polluting each other's context.
 
 Most agents carry no `model:` pin and inherit the session model; the orchestrator can still pass a model per run. The exceptions are deliberate, because a subagent that names no model inherits the session's price: the two scouts do lookups, so `repo-scout` is pinned to `haiku` and `package-scout` to `sonnet`; the six SME agents are pinned to `opus`, since a wrong answer about current tooling costs more than the tokens; and `security-reviewer`, `schema-reviewer`, and `qa-lead` set `effort: high`, because their value is in the edge cases a lower effort skips (the key overrides the session level, so it raises a medium session and lowers an xhigh or max one; there is no floor key). The SME agents also set `omitClaudeMd: true` (Claude Code v2.1.271+) — they answer from their own body and the delegation prompt, so loading the global and project instruction files would only add cost.
 
@@ -22,6 +22,7 @@ Most agents carry no `model:` pin and inherit the session model; the orchestrato
 | `launch-operator` | Deploy pipeline, monitoring, environment config | Pre-launch readiness check |
 | `security-reviewer` | In-context app-logic flaws: broken authz/IDOR, trust boundaries, business logic (generic patterns → soundcheck plugin where the project enables it) | After implementation, before merge |
 | `code-simplifier` | Over-engineering, dead code, premature abstractions | After implementation, before merge |
+| `test-architect` | Test suite design: tests that assert source text or mock calls instead of behaviour, tests that cannot fail, pure logic covered only through slow integration paths, string-matching gates propped up by tests | After tests are written or changed, before merge; when a suite is slow or brittle |
 | `agent-native-review` | Agent-consumed surfaces: verification affordances, subagent context parity, primitive tool design, instruction drift | After changing skills, hooks, agent definitions, or instruction files |
 
 ### Utility agents (read-only except `test-writer`, which edits)
@@ -30,7 +31,7 @@ Most agents carry no `model:` pin and inherit the session model; the orchestrato
 |-------|-------|-------------|
 | `repo-scout` | Fast codebase orientation and status briefing | Jumping into a repo, starting a session, context refresh |
 | `dependency-doctor` | Dep audits, CVEs, outdated packages, upgrade paths | Periodic health checks, before upgrades, pre-launch |
-| `test-writer` | Bug reproduction, feature coverage, edge case tests | Before fixing bugs (failing test first), after new features |
+| `test-writer` | Bug reproduction, feature coverage, edge case tests — pure-unit first, fakes over mocks | Before fixing bugs (failing test first), after new features, to carry out a `test-architect` plan |
 | `schema-reviewer` | DB schema, migrations, data integrity, query patterns | After schema changes, before running migrations |
 | `package-scout` | Build-vs-buy research — finds existing packages before building from scratch | Before implementing non-trivial features or utilities |
 
@@ -114,8 +115,8 @@ than as part of a phase.
 **Mode:** All parallel (read-only review). Apply fixes sequentially.
 
 ### Phase 3 — Launch hardening
-**Agents:** qa-lead, perf-accessibility, launch-operator, code-simplifier
-**Goal:** Make sure it works, performs, and is ready to ship.
+**Agents:** qa-lead, test-architect, perf-accessibility, launch-operator, code-simplifier
+**Goal:** Make sure it works, performs, and is ready to ship — and that the tests saying so would fail if it broke. Hand `test-architect`'s remediation plan to `test-writer`.
 **Mode:** All parallel (review), then apply fixes in dependency order.
 
 Complete simplification, documentation, and generated-file updates before

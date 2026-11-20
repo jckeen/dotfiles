@@ -16,10 +16,20 @@
 # rather than a defect.
 claude/scripts/tests/*
 
-# Jules routine prompts (ADR-0009) are instructions for a cloud agent by
-# design, and the generated root AGENTS.md is the brief for one: every line is
-# directive on purpose (#466). These are LIVE prompts, so the narrow exemption
-# above matters most here: an injected "skip the checks" / "print the token"
-# line in a routine body is still a finding (#484).
-agents/routines/*
+# Skill bodies are instructions for an agent by design, and the generated root
+# AGENTS.md is the brief for a cloud one: every line is directive on purpose
+# (#466). Without these globs the gate filed one "non-exempt directive" issue
+# per skill file a change touched (#744-#757). These are LIVE prompts, so the
+# narrow exemption above matters most here: an injected "skip the checks" /
+# "print the token" line in a skill body is still a finding (#484).
+claude/skills/*
+agents/skills/*
+antigravity/skills/*
 AGENTS.md
+
+# The instruction canon and the multi-agent playbook are the same kind of
+# text: rules written for an agent (#747). A changelog fragment quotes the
+# instruction lines a change added or removed (#746).
+agents/canon/*
+claude/MULTI-AGENT.md
+changelog.d/*

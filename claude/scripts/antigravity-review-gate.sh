@@ -24,6 +24,13 @@
 #   So we do NOT pass --dangerously-skip-permissions. Instead:
 #     * --mode plan  → read-only planning mode, no edit tools.
 #     * --sandbox    → terminal restrictions on.
+#     * a throwaway HOME and workspace (#687). Plan mode does not stop a write
+#       the user's permission baseline allows, and the baseline allows
+#       write_file(~/dev/). agy therefore runs with HOME set to a private temp
+#       directory that holds only its credential (linked) and a settings file
+#       denying write_file(/). Its workspace is an extract of the reviewed
+#       HEAD, not the repository. A `~/` rule resolves inside that directory,
+#       so no baseline rule reaches the real ~/dev.
 #     * the prompt (with the fenced diff) is delivered on stdin, never argv, so
 #       the reviewed diff — which can contain secrets — is not visible in `ps`
 #       while the review runs (#154). Once the prompt is consumed stdin is at
@@ -39,8 +46,9 @@
 #   A pure diff review needs no tools at all; these leave it no way to run any.
 #
 # Degrade-open (exit 0 + loud warning) when the tool can't run — agy missing, not
-# authenticated, timeout, no parseable output, or a diff too large to review in
-# one pass. An Antigravity outage must not wedge every push. Set
+# authenticated, timeout, no output, or a diff too large to review in one pass.
+# A run that fails, times out or is cancelled AFTER writing output the
+# completed-run parse would refuse is a verdict instead (exit 2, #579). An Antigravity outage must not wedge every push. Set
 # ANTIGRAVITY_GATE_REQUIRED=1 (or --require) to turn those degraded cases into
 # hard failures (exit 3).
 #
@@ -71,13 +79,17 @@
 #     (gate_verify_agy_model): warning only, never blocks.
 #
 # Usage:
-#   antigravity-review-gate.sh [--base <branch>] [--committed|--uncommitted] [--require]
-#                              [--model <display-label>]
+#   antigravity-review-gate.sh [--base <branch>] [--committed|--uncommitted] [--clean-worktree]
+#                              [--require] [--model <display-label>]
 #
 # Exit codes:
 #   0  clean, or only P3+ nits
+#   1  the gate stopped without a verdict: a command failed, or a cancellation
+#      landed where bash 5.2 cannot run its handler (#515). A cancellation is
+#      otherwise re-raised (128 + signal) unless the output is a verdict.
 #   2  local validation failed, blocking findings present (P0/P1/P2),
-#      unresolvable base, unrecognizable review output, OR the model pin
+#      unresolvable base, unrecognizable review output — from a completed run
+#      or one that failed, timed out or was cancelled — OR the model pin
 #      verifiably failed (review ran on the wrong model)
 #   3  agy could not run — or the diff was above a size cap — AND the gate was
 #      REQUIRED, or the model pin was unverifiable in a REQUIRED run
@@ -91,6 +103,17 @@
 # could not run" and falls back to Codex for; exit 2 never falls back.
 
 set -euo pipefail
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_RUN_DIR=""
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_CLEAN_WT=""
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_CLEAN_WT_ROOT=""
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_RECEIPT_REPO=""
+# shellcheck disable=SC2034  # Initialized before traps; shared with gate-lib.sh.
+GATE_WORK_REPO=""
+GATE_EXIT_HANDLER=""
 
 # Shared gate plumbing: colors, base resolution, diff-target selection, diff
 # extraction/filtering, hash fencing, portable timeout (#200). gate-lib.sh
@@ -142,6 +165,7 @@ fi
 BASE=""
 FORCE_COMMITTED=false
 FORCE_UNCOMMITTED=false
+CLEAN_WORKTREE=false
 # Display LABEL, not a slug (#205). `${VAR-default}` (no colon): an explicitly
 # empty ANTIGRAVITY_GATE_MODEL disables pinning; unset gets the default. The
 # previous default ("Gemini 3.1 Pro (High)") left agy's model list by 1.4.2;
@@ -151,18 +175,27 @@ MODEL="${ANTIGRAVITY_GATE_MODEL-Gemini 4 Argon (High)}"
 # shellcheck disable=SC2034  # BASE, FORCE_COMMITTED, and FORCE_UNCOMMITTED are read by gate-lib.sh.
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --base)        BASE="${2:-}"; shift 2 ;;
-    --committed)   FORCE_COMMITTED=true; shift ;;
-    --uncommitted) FORCE_UNCOMMITTED=true; shift ;;
-    --require)     REQUIRED=1; shift ;;
-    --model)       MODEL="${2:-}"; shift 2 ;;
-    -h|--help)     sed -n '2,80p' "$0"; exit 0 ;;
-    *)             red "Unknown arg: $1 (try --help)"; exit 64 ;;
+    --base)           BASE="${2:-}"; shift 2 ;;
+    --committed)      FORCE_COMMITTED=true; shift ;;
+    --uncommitted)    FORCE_UNCOMMITTED=true; shift ;;
+    --clean-worktree) CLEAN_WORKTREE=true; shift ;;
+    --require)        REQUIRED=1; shift ;;
+    --model)          MODEL="${2:-}"; shift 2 ;;
+    -h|--help)        sed -n '2,103p' "$0"; exit 0 ;;
+    *)                red "Unknown arg: $1 (try --help)"; exit 64 ;;
   esac
 done
 
 if [[ "$FORCE_COMMITTED" == true && "$FORCE_UNCOMMITTED" == true ]]; then
   red "Options --committed and --uncommitted cannot be combined."
+  exit 2
+fi
+if [[ "$CLEAN_WORKTREE" == true && "$FORCE_UNCOMMITTED" == true ]]; then
+  red "Options --clean-worktree and --uncommitted cannot be combined."
+  exit 2
+fi
+if [[ "$CLEAN_WORKTREE" == true && "$FORCE_COMMITTED" != true ]]; then
+  red "Option --clean-worktree requires --committed."
   exit 2
 fi
 
@@ -172,30 +205,70 @@ fi
 BLOCK_RE='^[[:space:]]*-?[[:space:]]*\[P[012]\]'
 LOW_RE='^[[:space:]]*-?[[:space:]]*\[P[3-9]\]'
 
+# True when agy's output is something the completed-run parse (Step 5) would
+# refuse: an anchored P0–P2 line, a stray [P#] token outside a recognized
+# marker, or text that is neither finding lines nor a whole-verdict LGTB. False
+# for absent or empty output and for what that parse would pass (LGTB, P3-only).
+# One predicate for every run — completed, failed, timed out or cancelled
+# (#579): the same bytes must not block from a completed run and degrade from
+# one that did not complete.
+agy_output_may_block() {
+  [[ -n "${SUMMARY_FILE:-}" && -s "${SUMMARY_FILE:-}" ]] || return 1
+  grep -qE "$BLOCK_RE" "$SUMMARY_FILE" && return 0
+  if ! grep -qE "$LOW_RE" "$SUMMARY_FILE"; then
+    local whole last
+    whole="$(tr -d '[:space:]' < "$SUMMARY_FILE")"
+    last="$(grep -vE '^[[:space:]]*$' "$SUMMARY_FILE" | tail -n 1 | tr -d '[:space:]' || true)"
+    [[ "$whole" == "LGTB" ]] && return 1
+    [[ "$last" == "LGTB" ]] && ! grep -qE '\[P[0-9]\]' "$SUMMARY_FILE" && return 1
+    return 0
+  fi
+  # Draining grep, not -q: under pipefail an early match would SIGPIPE sed and
+  # turn "may block" into false (Codex round 3).
+  sed -E "s/$BLOCK_RE//; s/$LOW_RE//" "$SUMMARY_FILE" | grep -E '\[P[0-9]\]' >/dev/null
+}
+
+# What a run that did not complete shows for its verdict: the anchored P0–P2
+# lines when there are any, else the head of the output that could not be
+# certified. head reads first, sed second (#422).
+show_blocking_output() {
+  if grep -qE "$BLOCK_RE" "$SUMMARY_FILE"; then
+    grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
+  else
+    head -n 20 "$SUMMARY_FILE" | sed 's/^/  /'
+  fi
+}
+
 # A verdict must never be hidden behind a degraded exit (ADR-0008). Exit 3 tells
 # review-and-push.sh "this lane could not run", and it answers by handing the
 # diff to Codex — whose approval must not be able to ship over findings this
 # lane already raised. So every exit-3 path that runs AFTER agy produced output
 # (print-timeout expiry, exit 124, a nonzero exit, an unverifiable model pin)
-# first looks at that output: blocking finding lines are a verdict and exit 2,
-# which never falls back. Before dispatch SUMMARY_FILE is unset or empty and this
-# is a no-op. Partial output is still never certified clean: a P3-only or empty
-# partial still degrades as before.
+# first looks at that output: anything the completed-run parse would refuse
+# (agy_output_may_block) is a verdict and exits 2, which never falls back.
+# Before dispatch SUMMARY_FILE is unset or empty and this is a no-op. Partial
+# output is still never certified clean: a P3-only, LGTB or empty partial still
+# degrades as before.
 verdict_in_partial_output() {
-  [[ -n "${SUMMARY_FILE:-}" && -s "${SUMMARY_FILE:-}" ]] || return 0
-  grep -qE "$BLOCK_RE" "$SUMMARY_FILE" || return 0
+  agy_output_may_block || return 0
   # A verdict retires the other lane's approval like any other (#499), and
   # records its per-artifact marker first (#573).
   gate_block
   gate_claim
-  red "✖ BLOCKING findings (P0–P2) from Antigravity, in output the gate could not certify complete:"
-  grep -E "$BLOCK_RE" "$SUMMARY_FILE" | sed 's/^/  /'
+  if grep -qE "$BLOCK_RE" "$SUMMARY_FILE"; then
+    red "✖ BLOCKING findings (P0–P2) from Antigravity, in output the gate could not certify complete:"
+  else
+    red "✖ Antigravity output the gate could not certify complete carries, or may carry, blocking findings:"
+  fi
+  show_blocking_output
   red "  A verdict, not a degraded lane: address the findings before any fallback (ADR-0008)."
   exit 2
 }
 
 # Degrade-open helper: warn, and only hard-fail if the gate is REQUIRED.
 GATE_KEEP_AGY_LOG=0
+# Set once a handler has chosen the exit status; never inherited (gate_finish).
+GATE_EXIT_DECIDED=0
 degrade() {
   # A degraded run is a diagnostic case even when it exits 0 (#409).
   GATE_KEEP_AGY_LOG=1
@@ -223,6 +296,21 @@ command -v jq >/dev/null 2>&1 || { red "jq is required for artifact receipts."; 
 gate_resolve_base
 
 gate_select_diff_target
+
+# shellcheck disable=SC2329  # invoked by early signal traps prior to Step 4
+_agy_early_cancel() {
+  trap '' INT TERM HUP QUIT
+  gate_cleanup || true
+  trap - "$1"
+  kill -s "$1" "$$"
+}
+if [[ "$CLEAN_WORKTREE" == true ]]; then
+  for gate_signal in INT TERM HUP QUIT; do
+    # shellcheck disable=SC2064  # Bind each signal name now, deliberately.
+    trap "_agy_early_cancel $gate_signal" "$gate_signal"
+  done
+  gate_clean_worktree_setup
+fi
 
 # ─── Step 2: extract + filter the diff ─────────────────────────
 # Passive filename filters retain instructions, executables, and symlinks.
@@ -353,31 +441,189 @@ if [[ "$GATE_REQUIRED_LANE" == codex ]]; then
   yellow "  receipt check. Run codex-review-gate.sh --require to ship (ADR-0008)."
 fi
 
+# `env -u` flags for every variable that reroutes git away from the current
+# directory (shared across isolated Step 3 validation and the agy jail #687).
+GIT_ENV_UNSET=()
+for _v in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_IMPLICIT_WORK_TREE \
+  GIT_GRAFT_FILE GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE GIT_NAMESPACE GIT_PREFIX \
+  GIT_ATTR_SOURCE GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT \
+  GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; do
+  GIT_ENV_UNSET+=(-u "$_v")
+done
+unset _v
+
+run_step3_checks() {
+  local check_dir="$1" cargo_target="${2:-}" check_path="$PATH"
+  if [[ -d "$check_dir/node_modules/.bin" ]]; then
+    check_path="$check_dir/node_modules/.bin:$check_path"
+  fi
+  if [[ -f "$check_dir/package.json" ]]; then
+    if [[ -f "$check_dir/tsconfig.json" ]] && grep -q '"typescript"' "$check_dir/package.json" 2>/dev/null; then
+      echo "  → tsc --noEmit"
+      (cd -- "$check_dir" && PATH="$check_path" npx tsc --noEmit) || { red "  TypeScript compilation failed — fix compiler errors before review."; gate_block; gate_claim; exit 2; }
+    fi
+    if grep -q '"lint"' "$check_dir/package.json" 2>/dev/null; then
+      echo "  → lint"
+      local -a lint_cmd=(npm run lint)
+      if   [[ -f "$check_dir/bun.lockb" || -f "$check_dir/bun.lock" ]]; then lint_cmd=(bun run lint)
+      elif [[ -f "$check_dir/pnpm-lock.yaml" ]];                         then lint_cmd=(pnpm run lint)
+      elif [[ -f "$check_dir/yarn.lock" ]];                              then lint_cmd=(yarn run lint)
+      fi
+      (cd -- "$check_dir" && PATH="$check_path" "${lint_cmd[@]}") || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
+    fi
+  elif [[ -f "$check_dir/Cargo.toml" ]]; then
+    echo "  → cargo check"
+    if [[ -n "$cargo_target" ]]; then
+      (cd -- "$check_dir" && CARGO_TARGET_DIR="$cargo_target" cargo check) || { red "  cargo check failed."; gate_block; gate_claim; exit 2; }
+    else
+      (cd -- "$check_dir" && cargo check) || { red "  cargo check failed."; gate_block; gate_claim; exit 2; }
+    fi
+  elif [[ -f "$check_dir/go.mod" ]]; then
+    echo "  → go vet"
+    (cd -- "$check_dir" && go vet ./...) || { red "  go vet failed."; gate_block; gate_claim; exit 2; }
+  fi
+}
+
 # ─── Step 3: local validation before dispatch ────────────────────────────
 # Cheap, deterministic checks before spending plan quota. Fail HARD (exit 2) —
 # broken code should never reach the review step. A failure here is a blocking
 # verdict on the artifact, so it claims first (#499): an older approval from the
 # other lane must not ship code this lane found broken.
 echo "Running local compile/lint checks first..."
-if [[ -f package.json ]]; then
-  if [[ -f tsconfig.json ]] && grep -q '"typescript"' package.json 2>/dev/null; then
-    echo "  → tsc --noEmit"
-    npx tsc --noEmit || { red "  TypeScript compilation failed — fix compiler errors before review."; gate_block; gate_claim; exit 2; }
-  fi
-  if grep -q '"lint"' package.json 2>/dev/null; then
-    echo "  → lint"
-    if   [[ -f bun.lockb ]];       then bun run lint   || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
-    elif [[ -f pnpm-lock.yaml ]];  then pnpm run lint  || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
-    elif [[ -f yarn.lock ]];       then yarn run lint  || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
-    else                                npm run lint   || { red "  Linter failed."; gate_block; gate_claim; exit 2; }
+if [[ "$CLEAN_WORKTREE" == true ]]; then
+  step3_need_tsc=false
+  step3_need_lint=false
+  step3_need_cargo=false
+  step3_need_go=false
+  if [[ -f "$GATE_CLEAN_WT/package.json" ]]; then
+    if [[ -f "$GATE_CLEAN_WT/tsconfig.json" ]] && grep -q '"typescript"' "$GATE_CLEAN_WT/package.json" 2>/dev/null; then
+      step3_need_tsc=true
     fi
+    if grep -q '"lint"' "$GATE_CLEAN_WT/package.json" 2>/dev/null; then
+      step3_need_lint=true
+    fi
+    if [[ "$step3_need_tsc" == true || "$step3_need_lint" == true ]]; then
+      dep_rc=0
+      python3 - "$GATE_CLEAN_WT" "$step3_need_tsc" "$step3_need_lint" <<'PYDEPS' || dep_rc=$?
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+try:
+    root = Path(os.path.realpath(sys.argv[1]))
+    root_st = os.stat(root)
+    if not stat.S_ISDIR(root_st.st_mode):
+        sys.exit(4)
+    root_id = (root_st.st_dev, root_st.st_ino)
+except OSError:
+    sys.exit(4)
+
+need_tsc = sys.argv[2] == "true"
+need_lint = sys.argv[3] == "true"
+
+
+def within_root(path_obj):
+    try:
+        cur = Path(os.path.realpath(path_obj))
+    except OSError:
+        return False
+    while True:
+        try:
+            st = os.lstat(cur)
+        except OSError:
+            st = None
+        if st is not None and stat.S_ISDIR(st.st_mode) and (st.st_dev, st.st_ino) == root_id:
+            return True
+        parent = cur.parent
+        if parent == cur:
+            return False
+        cur = parent
+
+
+pkg_path = root / "package.json"
+if not within_root(pkg_path):
+    sys.exit(4)
+try:
+    data = json.loads(pkg_path.read_text(encoding="utf-8"))
+except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    sys.exit(2)
+if not isinstance(data, dict):
+    sys.exit(2)
+dep_keys = (
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+    "bundledDependencies",
+    "bundleDependencies",
+    "workspaces",
+)
+pnpm_ws = root / "pnpm-workspace.yaml"
+has_pnpm_ws = False
+if pnpm_ws.is_file():
+    if not within_root(pnpm_ws):
+        sys.exit(4)
+    try:
+        has_pnpm_ws = any(
+            line.strip() and not line.lstrip().startswith("#")
+            for line in pnpm_ws.read_text(encoding="utf-8").splitlines()
+        )
+    except (OSError, UnicodeDecodeError):
+        has_pnpm_ws = True
+has_lint_deps = any(bool(data.get(key)) for key in dep_keys) or has_pnpm_ws
+nm = root / "node_modules"
+has_nm = nm.is_dir() and not nm.is_symlink()
+tsc_bin = nm / ".bin" / "tsc"
+has_tsc_bin = has_nm and tsc_bin.is_file() and within_root(tsc_bin) and os.access(tsc_bin, os.X_OK)
+lint_uses_yarn = (
+    (root / "yarn.lock").is_file()
+    and within_root(root / "yarn.lock")
+    and not any((root / lf).is_file() for lf in ("bun.lockb", "bun.lock", "pnpm-lock.yaml"))
+)
+pnp_cjs = root / ".pnp.cjs"
+pnp_mjs = root / ".pnp.mjs"
+has_pnp_loader = (pnp_cjs.is_file() and within_root(pnp_cjs)) or (
+    pnp_mjs.is_file() and within_root(pnp_mjs)
+)
+yarn_cache = root / ".yarn/cache"
+has_pnp = (
+    lint_uses_yarn
+    and has_pnp_loader
+    and yarn_cache.is_dir()
+    and not yarn_cache.is_symlink()
+    and within_root(yarn_cache)
+)
+tsc_ok = (not need_tsc) or has_tsc_bin
+lint_ok = (not need_lint) or (not has_lint_deps) or has_nm or has_pnp
+if not (tsc_ok and lint_ok):
+    sys.exit(3)
+PYDEPS
+      if [[ "$dep_rc" -eq 2 ]]; then
+        red "  package.json is not valid JSON — fix it before review."; gate_block; gate_claim; exit 2
+      elif [[ "$dep_rc" -eq 3 ]]; then
+        degrade "Step 3 package.json compile/lint requires installed dependencies that are absent from the isolated --clean-worktree checkout; run codex-review-gate.sh --committed --clean-worktree or run antigravity-review-gate.sh --committed in a checkout with installed dependencies."
+      elif [[ "$dep_rc" -ne 0 ]]; then
+        degrade "could not inspect package.json dependencies for isolated Step 3 validation."
+      fi
+    fi
+  elif [[ -f "$GATE_CLEAN_WT/Cargo.toml" ]]; then
+    step3_need_cargo=true
+  elif [[ -f "$GATE_CLEAN_WT/go.mod" ]]; then
+    step3_need_go=true
   fi
-elif [[ -f Cargo.toml ]]; then
-  echo "  → cargo check"
-  cargo check || { red "  cargo check failed."; gate_block; gate_claim; exit 2; }
-elif [[ -f go.mod ]]; then
-  echo "  → go vet"
-  go vet ./... || { red "  go vet failed."; gate_block; gate_claim; exit 2; }
+  if [[ "$step3_need_tsc" == true || "$step3_need_lint" == true || "$step3_need_cargo" == true || "$step3_need_go" == true ]]; then
+    STEP3_DIR="$GATE_CLEAN_WT_ROOT/$(basename -- "$GATE_CLEAN_WT_ROOT")-step3"
+    STEP3_HEAD="$(jq -r '.artifact.head' "$GATE_RUN_DIR/snapshot.json")" || degrade "could not read captured HEAD for isolated Step 3 validation."
+    gate_clean_worktree_add_extra "$STEP3_DIR" "$STEP3_HEAD" \
+      || degrade "could not materialize isolated Step 3 validation worktree."
+    run_step3_checks "$STEP3_DIR" "$GATE_CLEAN_WT_ROOT/cargo-target"
+    gate_clean_worktree_remove_extra
+  fi
+else
+  run_step3_checks "." ""
 fi
 
 # ─── Step 4: run agy print mode, non-interactively and tool-locked ─
@@ -390,12 +636,43 @@ echo ""
 SUMMARY_FILE="$(mktemp -t agy-review.XXXXXX.txt)"
 AGY_ERR_FILE="$(mktemp -t agy-review-err.XXXXXX.txt)"
 AGY_LOG_FILE="$(mktemp -t agy-review-log.XXXXXX.txt)"
+AGY_JAIL=""
 # Keep agy's own log (and stderr) whenever the gate does not pass: a failed
 # or degraded run is exactly when the CLI-side log is needed (#409). The
 # review output itself is always removed — it can contain the diff.
 # shellcheck disable=SC2329  # invoked by the EXIT trap
+# Exit 2 is this gate's verdict code, so it must only ever be an exit the gate
+# chose (#515). Bash 5.2 re-parses a command substitution each time it expands
+# it, and a trapped signal landing in that parse makes the trap command fail to
+# parse: cancel_agy_review never runs and `set -e` ends the shell with status 2.
+# A chosen exit is an `exit` command — BASH_COMMAND names it — or one made by
+# cancel_agy_review, where BASH_COMMAND still names the interrupted command.
+# Any other status 2 is held to the cancellation rule: output the completed-run
+# parse would refuse is a verdict and claims; otherwise the gate reports that
+# it stopped and exits 1 — the signal is unknown here, so it cannot be
+# re-raised, and 3 would invite a Codex fallback nobody asked for.
 gate_finish() {
-  local rc=$?
+  local rc=$? last_command=$BASH_COMMAND
+  if [[ "$rc" -eq 2 && "$GATE_EXIT_DECIDED" != 1 ]]; then
+    case "$last_command" in
+      exit | exit\ *) ;;
+      *)
+        trap '' INT TERM HUP QUIT
+        GATE_EXIT_DECIDED=1
+        if agy_output_may_block; then
+          red "✖ Antigravity gate stopped after output that carries, or may carry, blocking findings:"
+          show_blocking_output
+          # In subshells: either may exit 2 itself, which is the status this
+          # branch keeps, and the cleanup below must still run.
+          (gate_block) || true
+          (gate_claim) || true
+        else
+          red "✖ Antigravity gate stopped without reaching a verdict (interrupted, or a command failed); no approval from this attempt."
+          rc=1
+        fi
+        ;;
+    esac
+  fi
   rm -f "$SUMMARY_FILE"
   # Retain only when agy actually produced something (log or stderr has
   # content) and the run did not pass cleanly: any non-zero exit, or a
@@ -405,32 +682,44 @@ gate_finish() {
   else
     rm -f "$AGY_ERR_FILE" "$AGY_LOG_FILE"
   fi
+  agy_jail_cleanup || true
   # Never let cleanup failure rewrite the gate's exit status under set -e.
   gate_cleanup || true
-  return "$rc"
+  exit "$rc"
 }
+# shellcheck disable=SC2034
+GATE_EXIT_HANDLER=gate_finish
 trap gate_finish EXIT
 # Bash defers a signal's trap until the foreground reviewer exits, so a
-# cancelled run may already hold agy's output. Blocking finding lines in it are
-# a verdict (#499): claim and exit 2, as verdict_in_partial_output does. With
-# none, re-raise the signal with its default action, exactly as before this
+# cancelled run may already hold agy's output. Output the completed-run parse
+# would refuse is a verdict (#499, #579): claim and exit 2, as
+# verdict_in_partial_output does. Otherwise re-raise the signal with its
+# default action, exactly as before this
 # handler existed — never a degraded exit 3, which review-and-push.sh would
 # answer with a Codex fallback. The trap runs inside the redirected `_tmo`
 # call, so it writes to the gate's own stdout/stderr, saved here as fds 8/9.
 exec 8>&1 9>&2
 cancel_agy_review() {
   trap '' INT TERM HUP QUIT
-  local findings=""
-  [[ ! -s "$SUMMARY_FILE" ]] || findings="$(grep -E "$BLOCK_RE" "$SUMMARY_FILE" || true)"
-  if [[ -n "$findings" ]]; then
+  if agy_output_may_block; then
+    # A chosen exit 2; gate_finish must not read it as one the gate did not choose.
+    GATE_EXIT_DECIDED=1
     {
-      red "✖ Antigravity review cancelled after it reported blocking findings:"
-      sed 's/^/  /' <<<"$findings"
+      if grep -qE "$BLOCK_RE" "$SUMMARY_FILE"; then
+        red "✖ Antigravity review cancelled after it reported blocking findings:"
+      else
+        red "✖ Antigravity review cancelled after output that carries, or may carry, blocking findings:"
+      fi
+      show_blocking_output
       gate_block
       gate_claim
     } >&8 2>&9
     exit 2
   fi
+  # The default action below skips the EXIT trap, and the jail links the
+  # credential: remove both jail and clean worktree before re-raising.
+  agy_jail_cleanup || true
+  gate_cleanup || true
   trap - "$1"
   kill -s "$1" "$$"
 }
@@ -470,13 +759,224 @@ set +e
 # expiry it exits 0 with whatever partial output it has plus a stderr note.
 # Pin it to the gate ceiling so a large diff gets the whole budget, and keep
 # the outer _tmo slightly above it so agy's graceful path wins the race.
+# ─── #687: a throwaway HOME and workspace for agy ──────────────
+# Fail closed: a jail that cannot be built is a lane that cannot run (degrade,
+# exit 3 under --require), never a run against the real home.
+agy_jail_cleanup() {
+  [[ -n "${AGY_JAIL:-}" && -d "$AGY_JAIL" ]] || return 0
+  # rm -r never follows the credential symlink; it removes only the link.
+  rm -rf -- "$AGY_JAIL"
+  AGY_JAIL=""
+}
+
+# Write the tree of commit $2 of repository $1 under $3, each blob as stored.
+# Not `git archive`: it exports only the cwd's subtree, and it honours
+# export-ignore and export-subst from tracked .gitattributes and from the
+# user's attributes file, so the reviewer could be handed a tree with the
+# instruction file missing or a file rewritten, while the receipt vouches for
+# the real one. `git cat-file blob` applies no attribute, filter or eol rule.
+#
+# Regular files go first, into a workspace that holds no symlink yet, so no
+# write can pass through a tracked link; every parent directory is created
+# component by component with no symlink allowed in the chain, which also
+# refuses a hand-built tree that lists a symlink and a directory under one
+# name. Tracked symlinks are created after,
+# then every link is resolved on the filesystem and any that lands outside the
+# workspace is removed (repeating until none does, since removing one link can
+# change what another resolves to). A lexical check on the target text is not
+# enough: a link to `.` followed by a link through it with `..` counts as
+# inside and resolves outside. Submodule entries are skipped. Any other mode,
+# a path with a `..` component, or a failed write fails the setup.
+agy_jail_materialize() {
+  local repo="$1" head="$2" dest="$3" entry mode type sha path target size listing
+  local -a links=()
+  # Replacement refs are ignored, as the receipt helper ignores them: a
+  # `git replace` for the head, a tree or a blob must not hand agy different
+  # files than the ones the snapshot vouches for.
+  local -a g=(env GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 git --no-replace-objects -C "$repo")
+  # The listing lands in a file first so a failed `ls-tree` fails the setup;
+  # read from a process substitution, its exit status would be lost and an
+  # empty or partial workspace would pass as complete.
+  listing="$(mktemp "${TMPDIR:-/tmp}/agy-jail-tree.XXXXXX")" || return 1
+  if ! "${g[@]}" ls-tree -r -z "$head" > "$listing"; then
+    rm -f -- "$listing"
+    return 1
+  fi
+  while IFS= read -r -d '' entry; do
+    mode="${entry%% *}"; entry="${entry#* }"
+    type="${entry%% *}"; entry="${entry#* }"
+    sha="${entry%%	*}"; path="${entry#*	}"
+    # No control characters: a newline or NUL-adjacent byte would be read
+    # differently by the component walk, `dirname` and the final write.
+    case "$path" in ''|/*|..|../*|*/..|*/../*|*[[:cntrl:]]*) rm -f -- "$listing"; return 1 ;; esac
+    # No `.git` component in any spelling git refuses on checkout: a tracked
+    # `.git` blob holding `gitdir: /elsewhere/.git` would make the `git init`
+    # below follow it and reinitialise that other repository (#687 follow-up).
+    if agy_jail_path_names_dotgit "$path"; then rm -f -- "$listing"; return 1; fi
+    case "$type" in
+      commit) continue ;;
+      blob) ;;
+      *) rm -f -- "$listing"; return 1 ;;
+    esac
+    case "$mode" in
+      100644|100755)
+        agy_jail_mkdir_real "$dest" "$(dirname -- "$path")" || { rm -f -- "$listing"; return 1; }
+        [[ ! -e "$dest/$path" && ! -L "$dest/$path" ]] || { rm -f -- "$listing"; return 1; }
+        "${g[@]}" cat-file blob "$sha" > "$dest/$path" || { rm -f -- "$listing"; return 1; }
+        [[ "$mode" != 100755 ]] || chmod 755 "$dest/$path" || { rm -f -- "$listing"; return 1; }
+        ;;
+      120000) links+=("$sha	$path") ;;
+      *) rm -f -- "$listing"; return 1 ;;
+    esac
+  done < "$listing"
+  rm -f -- "$listing"
+  for entry in "${links[@]+"${links[@]}"}"; do
+    sha="${entry%%	*}"; path="${entry#*	}"
+    # The target is the blob's exact bytes: a plain command substitution
+    # would drop trailing newlines and a shell variable cannot hold NUL, so
+    # the length is checked against the object's and any difference refuses.
+    target="$("${g[@]}" cat-file blob "$sha" && printf x)" || return 1
+    target="${target%x}"
+    size="$("${g[@]}" cat-file -s "$sha")" || return 1
+    [[ -n "$target" && "$(LC_ALL=C printf '%s' "$target" | wc -c)" -eq "$size" ]] || return 1
+    agy_jail_mkdir_real "$dest" "$(dirname -- "$path")" || return 1
+    [[ ! -e "$dest/$path" && ! -L "$dest/$path" ]] || return 1
+    ln -s -- "$target" "$dest/$path" || return 1
+  done
+  agy_jail_prune_escaping_links "$dest"
+}
+
+# Whether any component of $1 is `.git` in a spelling git itself refuses:
+# case-insensitive, trailing dots and spaces ignored, and the 8.3 short name
+# `git~1`. Pure string work on each component.
+agy_jail_path_names_dotgit() {
+  local rel="$1" part lowered
+  while [[ -n "$rel" ]]; do
+    part="${rel%%/*}"
+    if [[ "$rel" == */* ]]; then rel="${rel#*/}"; else rel=""; fi
+    lowered="$(printf '%s' "$part" | tr '[:upper:]' '[:lower:]')"
+    while [[ "$lowered" == *. || "$lowered" == *' ' ]]; do lowered="${lowered%?}"; done
+    [[ "$lowered" != .git && "$lowered" != 'git~1' ]] || return 0
+  done
+  return 1
+}
+
+# Create workspace directory $2 (relative to $1) one component at a time, with
+# no component allowed to be a symlink. `mkdir -p` would follow a link created
+# earlier in the same pass: a valid git tree never holds a symlink `a` beside
+# a directory `a/`, but a hand-built tree object can, and following it would
+# create directories and links outside the jail before any check ran.
+agy_jail_mkdir_real() {
+  local cur="$1" rel="$2" part
+  [[ "$rel" != . ]] || return 0
+  # Split on "/" by parameter expansion: `read -a` stops at a newline and
+  # would walk a shorter path than the one written.
+  while [[ -n "$rel" ]]; do
+    part="${rel%%/*}"
+    if [[ "$rel" == */* ]]; then rel="${rel#*/}"; else rel=""; fi
+    [[ -n "$part" && "$part" != . ]] || continue
+    cur="$cur/$part"
+    [[ ! -L "$cur" ]] || return 1
+    if [[ ! -e "$cur" ]]; then
+      mkdir -- "$cur" || return 1
+    elif [[ ! -d "$cur" ]]; then
+      return 1
+    fi
+  done
+}
+
+# Remove every symlink under $1 whose filesystem resolution is not $1 or
+# inside it. Resolution follows links physically (python's realpath), so a
+# chain through other tracked links is judged by where it really lands; a
+# dangling tail is normalised lexically, which can only stay where the
+# existing prefix put it.
+agy_jail_prune_escaping_links() {
+  python3 -I - "$1" <<'PY_PRUNE'
+import os
+import sys
+
+root = os.path.realpath(sys.argv[1])
+removed = True
+while removed:
+    removed = False
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            path = os.path.join(dirpath, name)
+            if not os.path.islink(path):
+                continue
+            resolved = os.path.realpath(path)
+            if resolved != root and not resolved.startswith(root + os.sep):
+                os.unlink(path)
+                removed = True
+PY_PRUNE
+}
+
+agy_jail_setup() {
+  local real="$HOME/.gemini/antigravity-cli" cli head repo
+  AGY_JAIL="$(mktemp -d "${TMPDIR:-/tmp}/agy-review-jail.XXXXXX")" || return 1
+  chmod 700 "$AGY_JAIL" || return 1
+  cli="$AGY_JAIL/jail-home/.gemini/antigravity-cli"
+  mkdir -p "$cli" "$AGY_JAIL/work" || return 1
+  # Only what agy needs to authenticate. The credential is linked, not copied,
+  # so a refreshed token lands in the user's own file.
+  if [[ -f "$real/antigravity-oauth-token" ]]; then
+    ln -s "$real/antigravity-oauth-token" "$cli/antigravity-oauth-token" || return 1
+  fi
+  if [[ -f "$real/installation_id" ]]; then
+    cp "$real/installation_id" "$cli/installation_id" || return 1
+  fi
+  # No allow rules at all, and an explicit deny on every file write. A headless
+  # run cannot answer a permission prompt, so anything else is denied too.
+  printf '%s\n' '{"toolPermission":"proceed-in-sandbox","enableTerminalSandbox":true,"permissions":{"allow":[],"deny":["write_file(/)"]}}' \
+    > "$cli/settings.json" || return 1
+  # The reviewed HEAD as plain files: context to read, no .git leading back.
+  head="$(jq -r '.artifact.head' "$GATE_RUN_DIR/snapshot.json")" || return 1
+  # Raw output plus a sentinel: a plain substitution would drop trailing
+  # newlines that belong to the directory name.
+  repo="$(jq -j '.repository' "$GATE_RUN_DIR/snapshot.json" && printf x)" || return 1
+  repo="${repo%x}"
+  agy_jail_materialize "$repo" "$head" "$AGY_JAIL/work" || return 1
+  # agy finds .agents/, GEMINI.md and AGENTS.md by walking up to the folder
+  # that holds .git. With none, the walk would climb out of the jail into
+  # TMPDIR, which anyone on the machine can write, so a planted
+  # /tmp/GEMINI.md could steer the verdict. An empty repository stops the
+  # walk and has no remote or worktree link back to the reviewed one.
+  # Inherited git routing (GIT_DIR, GIT_WORK_TREE, ...) would point this init
+  # at some other repository and leave the workspace bare, so it is cleared
+  # here and for agy itself, and the result is checked rather than trusted.
+  # Nothing may already be called .git here: a file there is a gitfile pointer
+  # that `git init` would follow out of the jail. The materialiser refuses the
+  # name, and this is the check that does not depend on it.
+  [[ ! -e "$AGY_JAIL/work/.git" && ! -L "$AGY_JAIL/work/.git" ]] || return 1
+  env "${GIT_ENV_UNSET[@]}" git init -q "$AGY_JAIL/work" || return 1
+  [[ -d "$AGY_JAIL/work/.git" && ! -L "$AGY_JAIL/work/.git" ]] || return 1
+  AGY_ENV=(
+    HOME="$AGY_JAIL/jail-home"
+    XDG_CONFIG_HOME="$AGY_JAIL/jail-home/.config"
+    XDG_CACHE_HOME="$AGY_JAIL/jail-home/.cache"
+    XDG_DATA_HOME="$AGY_JAIL/jail-home/.local/share"
+    XDG_STATE_HOME="$AGY_JAIL/jail-home/.local/state"
+    ANTIGRAVITY_GATE=1
+  )
+  # The model spot-check reads this run's records, which now live in the jail.
+  AGY_CONVERSATIONS_DIR="${AGY_CONVERSATIONS_DIR:-$cli/conversations}"
+}
+if ! agy_jail_setup; then
+  agy_jail_cleanup || true
+  degrade "could not build the throwaway home and workspace for agy (#687)."
+fi
+# A command, not a function, so _tmo's `timeout` can run it: `sh` enters the
+# workspace and execs agy, so the timeout's signal still reaches agy itself.
+# shellcheck disable=SC2016  # expanded by the inner sh, deliberately
+AGY_RUN=(env "${GIT_ENV_UNSET[@]}" "${AGY_ENV[@]}" sh -c 'cd "$1" || exit 125; shift; exec agy "$@"' agy-jail "$AGY_JAIL/work")
+
 AGY_ARGS=(--mode plan --sandbox --print-timeout "${PRINT_TIMEOUT_SECS}s")
 [[ -n "$MODEL" ]] && AGY_ARGS+=(--model "$MODEL" --log-file "$AGY_LOG_FILE")
 # stdout (the model's verdict) and stderr (agy's own diagnostics) are kept
 # apart: the expiry guard below must only ever see agy's stderr, never model
 # output that a reviewed diff could steer into imitating it.
 _tmo "$TMO_CEILING" \
-  env ANTIGRAVITY_GATE=1 agy "${AGY_ARGS[@]}" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>"$AGY_ERR_FILE"
+  "${AGY_RUN[@]}" "${AGY_ARGS[@]}" <<<"$PROMPT_INSTRUCTION" >"$SUMMARY_FILE" 2>"$AGY_ERR_FILE"
 RC=$?
 set -e
 
@@ -493,6 +993,16 @@ fi
 if [[ $RC -eq 124 ]]; then
   degrade "agy review timed out after ${PRINT_TIMEOUT_SECS}s."
 fi
+# A pin agy does not offer is a configuration error, not an outage (#696).
+# agy 1.4.x refuses it before reviewing ("invalid model selection … not
+# recognized as a known model"). That read as "agy review session failed" and
+# degraded quietly on every run, so name the pin and the override instead.
+# Matched on agy's own stderr only, like the timeout guard above.
+if [[ $RC -ne 0 && -n "$MODEL" ]] \
+  && grep -qE 'invalid model selection|not recognized as a known model' "$AGY_ERR_FILE"; then
+  red "✖ agy rejected the pinned model \"$MODEL\"; set ANTIGRAVITY_GATE_MODEL (or --model) to a label from \`agy models\`."
+  degrade "the pinned model is not one agy offers — a configuration error, not an outage."
+fi
 if [[ $RC -ne 0 ]] || [[ ! -s "$SUMMARY_FILE" ]]; then
   # head reads first, sed second (#422): the other order writes a long report
   # into a pipe head has already closed, and the SIGPIPE that kills sed ends
@@ -508,7 +1018,7 @@ if [[ $RC -ne 0 ]] || [[ ! -s "$SUMMARY_FILE" ]]; then
     # is empty": if a trivial prompt also returns nothing, the gate is
     # systemically broken — say so loudly. Same no-prompt-flag form as the
     # real run so the canary exercises the same channel.
-    CANARY="$(_tmo 60 env ANTIGRAVITY_GATE=1 agy --mode plan --sandbox <<<"Reply with exactly: PONG" 2>/dev/null || true)"
+    CANARY="$(_tmo 60 "${AGY_RUN[@]}" --mode plan --sandbox <<<"Reply with exactly: PONG" 2>/dev/null || true)"
     if [[ -z "$CANARY" ]]; then
       red "  CANARY FAILED: agy returned empty for a trivial stdin prompt too."
       red "  The stdin prompt channel or non-TTY stdout has likely regressed (see #227)."
@@ -573,21 +1083,8 @@ fi
 # blocking exit could claim and retire the approval that raced it.
 # Output that is not certifiably clean exits 2 below, so it is a blocking
 # verdict now: record its marker (#573) before a claim refused as superseded
-# can exit here. The predicate is the parse below, stated once more.
-agy_output_may_block() {
-  grep -qE "$BLOCK_RE" "$SUMMARY_FILE" && return 0
-  if ! grep -qE "$LOW_RE" "$SUMMARY_FILE"; then
-    local whole last
-    whole="$(tr -d '[:space:]' < "$SUMMARY_FILE")"
-    last="$(grep -vE '^[[:space:]]*$' "$SUMMARY_FILE" | tail -n 1 | tr -d '[:space:]' || true)"
-    [[ "$whole" == "LGTB" ]] && return 1
-    [[ "$last" == "LGTB" ]] && ! grep -qE '\[P[0-9]\]' "$SUMMARY_FILE" && return 1
-    return 0
-  fi
-  # Draining grep, not -q: under pipefail an early match would SIGPIPE sed and
-  # turn "may block" into false (Codex round 3).
-  sed -E "s/$BLOCK_RE//; s/$LOW_RE//" "$SUMMARY_FILE" | grep -E '\[P[0-9]\]' >/dev/null
-}
+# can exit here. The predicate (agy_output_may_block, above) is the parse
+# below, stated once more.
 if [[ "${GATE_RECEIPT_ELIGIBLE:-1}" == 1 ]]; then
   if agy_output_may_block; then
     gate_block

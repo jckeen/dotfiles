@@ -84,10 +84,11 @@ source "$DOTFILES_DIR/lib-checks.sh"
 # "/claude-memory"). Namespaced, not DEV_DIR, because DEV_DIR is a common
 # ambient variable in unrelated shells.
 DEV_DIR="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
+DEV_DIR_PREFIX="${DEV_DIR%/}"
 # Private companion repo (settings.json + identity + auto-memory). Optional.
 # Derived from DEV_DIR (not hardcoded ~/dev) so a checkout under ~/code etc.
 # still finds its sibling claude-memory repo.
-BOOTSTRAP_SCRIPT="$DEV_DIR/claude-memory/bootstrap.sh"
+BOOTSTRAP_SCRIPT="$DEV_DIR_PREFIX/claude-memory/bootstrap.sh"
 
 # Agent-service selection (issue #425): which of Claude Code, Codex, and
 # Antigravity this machine installs, links, and health-checks. Parsing,
@@ -205,7 +206,7 @@ run_health_audit() {
   # to also enforce the +x bit so an un-executable source script doesn't pass
   # health checks while still failing at runtime.
   local bin_src
-  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+  for bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh rc-start; do
     bin_src="$DOTFILES_DIR/$bin"
     [ -f "$bin_src" ] || continue
     alink "$bin_src" "$HOME_DIR/.local/bin/$bin" "bin/$bin" "$mode" "executable"
@@ -863,8 +864,8 @@ if [[ "$PLATFORM" == "wsl" ]] && service_selected claude; then
 fi
 
 # ─── 1c. Dotfiles bin scripts → ~/.local/bin ────────────────────────
-# Top-level helper scripts (gh-bootstrap.sh, git-hygiene.sh, hygiene-status.sh)
-# ship in $DOTFILES_DIR but aren't on PATH on their own. ~/.local/bin is
+# Top-level helper scripts (gh-bootstrap.sh, git-hygiene.sh, hygiene-status.sh,
+# rc-start) ship in $DOTFILES_DIR but aren't on PATH on their own. ~/.local/bin is
 # already added to PATH by the shell config in section 7, so symlinking
 # there makes them callable as plain commands from any cwd.
 echo ""
@@ -877,7 +878,7 @@ echo "--- Linking dotfiles bin scripts ---"
 # Permission denied. Skip chmod when the bit is already set, and tolerate
 # EPERM on read-only / non-owner checkouts.
 run mkdir -p "$HOME_DIR/.local/bin"
-for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh; do
+for _bin in gh-bootstrap.sh git-hygiene.sh hygiene-status.sh rc-start; do
   _src="$DOTFILES_DIR/$_bin"
   if [ ! -f "$_src" ]; then
     echo "  -> $_bin not found in dotfiles, skipping"
@@ -1058,7 +1059,7 @@ if [ -f "$DOTFILES_DIR/githooks/pre-push" ]; then
 fi
 
 # ─── 2. Node.js (if not present) ─────────────────────────────────────
-# Needed for npm-installed CLIs (Codex §3c, Jules §3d) — Claude Code itself now uses
+# Needed for npm-installed CLIs (Codex §3c) — Claude Code itself now uses
 # the native installer (§3) and no longer requires Node. On Linux/WSL the
 # default is a PINNED nodejs.org binary release verified against that
 # release's own SHASUMS256.txt — the same immutable-release pattern as bun
@@ -1146,7 +1147,7 @@ install_node_pinned() {
     ln -sf "$HOME_DIR/.local/share/${asset}/bin/$tool" "$HOME_DIR/.local/bin/$tool"
   done
   # npm's global prefix defaults to the tarball dir, so `npm install -g`
-  # binaries (e.g. codex §3c, jules §3d) would land in ~/.local/share/${asset}/bin —
+  # binaries (e.g. codex §3c) would land in ~/.local/share/${asset}/bin —
   # which is NOT on PATH (issue #267). Point the global prefix at ~/.local
   # so global executables land in the already-on-PATH ~/.local/bin.
   # PATH must carry the freshly-linked bin dir for THIS invocation: npm's
@@ -1185,7 +1186,7 @@ if ! command -v node &>/dev/null; then
     # Make the fresh install resolvable for the remainder of this script.
     export PATH="$HOME_DIR/.local/bin:$PATH"
     if [ "${DRY_RUN:-0}" != "1" ] && ! command -v node &>/dev/null && [ "$NODE_INSTALL_METHOD" != "skip" ]; then
-      echo "  !! WARNING: node still not found after install attempt; Codex (§3c) and Jules (§3d) will not install"
+      echo "  !! WARNING: node still not found after install attempt; Codex (§3c) will not install"
     fi
   fi
 else
@@ -1629,6 +1630,8 @@ if service_selected claude && [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/
   # PluginDriftCheck.hook.ts and sync-plugins.sh).
   INSTALLED_PLUGINS="$(claude plugin list 2>/dev/null | user_scoped_plugins || true)"
 
+  PER_PROJECT_PLUGINS="$(manifest_per_project_plugins < "$PLUGIN_LIST")"
+
   # Install each plugin if not already installed
   while IFS= read -r line; do
     # Strip comments/whitespace
@@ -1650,7 +1653,17 @@ if service_selected claude && [ -f "$PLUGIN_LIST" ] && command -v claude &>/dev/
       echo "  -> $plugin already installed"
     else
       echo "  -> Installing $plugin"
-      run claude plugin install "$plugin" || echo "     (install failed — continuing)"
+      if run claude plugin install "$plugin"; then
+        # Install enables the plugin in the user enabledPlugins map; a
+        # [per-project] one must be enabled only by a project's own settings
+        # (#720). Same helper and command as sync-plugins.sh.
+        if printf '%s\n' "$PER_PROJECT_PLUGINS" | grep -qxF "$plugin"; then
+          run claude plugin disable --scope user "$plugin" \
+            || echo "     (could not disable $plugin; it stays enabled globally — run: claude plugin disable --scope user $plugin)"
+        fi
+      else
+        echo "     (install failed — continuing)"
+      fi
     fi
   done < "$PLUGIN_LIST"
 fi
@@ -1709,64 +1722,18 @@ if service_selected codex && command -v codex &>/dev/null; then
   fi
 fi
 
-# ─── 3d. Jules CLI ───────────────────────────────────────────────────
-# Jules is the cloud routine lane (ADR-0009): a daily timer dispatches the
-# agents/routines/ catalog over the REST API, and this CLI is the interactive
-# way in (`jules remote list`, `jules remote pull`). npm-global like Codex, so
-# §3b's ~/.local npm prefix already puts the binary on PATH.
-JULES_INSTALLED=0
-if ! command -v jules &>/dev/null; then
-  echo ""
-  echo "--- Installing Jules CLI ---"
-  run npm install -g @google/jules || echo "  -> Jules install failed (continuing; install manually and re-run setup.sh)"
-else
-  # Same state-writing-probe class as `gh auth status` (issue #189): even a
-  # version print can initialize a Node CLI's config dir, which would make the
-  # dry-run no-writes contract fail on a machine that has Jules installed.
-  if [ "${DRY_RUN:-0}" = "1" ]; then
-    echo "Jules CLI already installed (version probe skipped in dry-run)"
-  else
-    echo "Jules CLI already installed: $(jules version 2>/dev/null || echo 'installed')"
-  fi
-fi
-if command -v jules &>/dev/null; then
-  JULES_INSTALLED=1
-fi
-
-if [ "$JULES_INSTALLED" -eq 1 ]; then
-  echo ""
-  echo "--- Jules authentication ---"
-  # `jules login` opens a browser OAuth flow, so it is never run unattended.
-  # The routine dispatcher does not use the CLI's credentials at all: it reads
-  # an API key file, which is why the manual step below names both.
-  if [ "$ASSUME_YES" = "1" ]; then
-    echo "  -> [--yes] manual step: run 'jules login' for interactive CLI use"
-  else
-    ask_yn "N" "Run 'jules login' now? [y/N] "
-    if [[ "${yn:-}" =~ ^[Yy] ]]; then
-      run jules login || true
-    else
-      echo "  Later, run: jules login"
-    fi
-  fi
-  echo "  Routine dispatch uses an API key, not the CLI login. Create one in the"
-  echo "  Jules web app under Settings, then store it mode 0600:"
-  echo "    install -d -m 700 ~/.config/jules"
-  echo "    install -m 600 /dev/null ~/.config/jules/api-key   # then paste the key in"
-  echo "  The daily dispatch timer is paused (ADR-0009): claude/systemd/install.sh"
-  echo "  skips it unless JULES_LANE_ENABLED=1."
-fi
-
-# The Jules lane is paused (ADR-0009). A timer an earlier install enabled
-# would keep dispatching after an update, and the normal update path runs this
-# script, not claude/systemd/install.sh, so the pause is enforced here too.
+# ─── 3d. Retired Jules lane ─────────────────────────────────────────
+# The Jules routine lane is retired (ADR-0009): the service was shut down, and
+# its dispatcher, catalog and units are gone from this repo. A timer an earlier
+# install enabled would fire a unit whose script no longer exists, and the
+# normal update path runs this script, so the retirement is enforced here.
 JULES_TIMER_UNIT="$HOME/.config/systemd/user/jules-dispatch.timer"
-if [ "${JULES_LANE_ENABLED:-}" != 1 ] && [ -e "$JULES_TIMER_UNIT" ] \
-   && command -v systemctl &>/dev/null; then
+if [ -e "$JULES_TIMER_UNIT" ] && command -v systemctl &>/dev/null; then
   echo ""
-  echo "--- Jules routine lane is paused (ADR-0009) ---"
+  echo "--- Jules routine lane is retired (ADR-0009) ---"
   if run systemctl --user disable --now jules-dispatch.timer; then
-    echo "  -> jules-dispatch.timer disabled (re-enable later: JULES_LANE_ENABLED=1 bash $DOTFILES_DIR/claude/systemd/install.sh)"
+    run rm -f "$JULES_TIMER_UNIT" "${JULES_TIMER_UNIT%.timer}.service"
+    echo "  -> jules-dispatch.timer disabled and its unit files removed"
   else
     echo "  !! could not disable jules-dispatch.timer; run: systemctl --user disable --now jules-dispatch.timer"
   fi
@@ -1960,7 +1927,7 @@ GITCONF
   # (e.g. /home/<you>/dev/dotfiles) into the public repo. Same reasoning as the
   # gh credential-helper block below.
   if [[ "$PLATFORM" == "wsl" ]]; then
-    for _safe_dir in "$DOTFILES_DIR" "$DEV_DIR/claude-memory"; do
+    for _safe_dir in "$DOTFILES_DIR" "$DEV_DIR_PREFIX/claude-memory"; do
       git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null \
         | grep -Fxq "$_safe_dir" \
         || git config --file "$DOTFILES_DIR/.gitconfig.local" --add safe.directory "$_safe_dir"
@@ -2077,7 +2044,7 @@ fi
 # claude-memory/<project-basename>/memory, so durable facts are version-
 # controlled and synced. The source of truth lives in the repo; the symlink
 # points Claude at it.
-MEMORY_REPO="$DEV_DIR/claude-memory"
+MEMORY_REPO="$DEV_DIR_PREFIX/claude-memory"
 if ! service_selected claude; then
   echo "  -> Claude Code not selected: skipping Claude memory links (existing links left as-is)"
 elif [ -d "$MEMORY_REPO" ]; then
@@ -2109,7 +2076,7 @@ elif [ -d "$MEMORY_REPO" ]; then
   }
   # The dev root itself (basename "dev"), then every immediate project under it.
   link_project_memory "dev" "$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
-  for _proj in "$DEV_DIR"/*/; do
+  for _proj in "$DEV_DIR_PREFIX"/*/; do
     [ -d "$_proj" ] || continue
     [ "$(basename "$_proj")" = "claude-memory" ] && continue  # the repo itself
     link_project_memory "$(basename "$_proj")" \
@@ -2205,7 +2172,7 @@ if service_selected codex; then
 
   # Sibling of the dev directory, like claude-memory, so DOTFILES_DEV_DIR
   # redirects this lookup too (#701); the explicit override still wins.
-  CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$DEV_DIR/codex-memory}"
+  CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$DEV_DIR_PREFIX/codex-memory}"
   if [ -d "$CODEX_MEMORY_REPO" ]; then
     echo "  -> codex-memory private repo detected at $CODEX_MEMORY_REPO"
     if [ -f "$CODEX_MEMORY_REPO/bootstrap.sh" ]; then
@@ -2300,14 +2267,24 @@ if service_selected antigravity; then
     echo "  -> Antigravity hooks.json linked"
   fi
 
+  # Sibling of the dev directory, so DOTFILES_DEV_DIR redirects it and its
+  # permissions overlay too (#701); the explicit override still wins.
+  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$DEV_DIR_PREFIX/agy-memory}"
+
   # Permission baseline: curated allow/ask/deny rules plus proceed-in-sandbox
   # mode, merged into the machine-local ~/.gemini/antigravity-cli/settings.json
   # (never symlinked — it also holds trustedWorkspaces and prompt-saved grants).
   # Merge keeps user-added rules; `agy-apply-permissions.py prune` resets them.
   if [ -f "$DOTFILES_DIR/antigravity/permissions.json" ]; then
+    AGY_PERM_ARGS=(
+      --settings "$HOME_DIR/.gemini/antigravity-cli/settings.json"
+      --rules "$DOTFILES_DIR/antigravity/permissions.json"
+    )
+    if [ -f "$AGY_MEMORY_REPO/permissions.local.json" ]; then
+      AGY_PERM_ARGS+=(--overlay "$AGY_MEMORY_REPO/permissions.local.json")
+    fi
     if run python3 "$DOTFILES_DIR/claude/scripts/agy-apply-permissions.py" apply \
-        --settings "$HOME_DIR/.gemini/antigravity-cli/settings.json" \
-        --rules "$DOTFILES_DIR/antigravity/permissions.json"; then
+        "${AGY_PERM_ARGS[@]}"; then
       echo "  -> Antigravity permission baseline applied (proceed-in-sandbox)"
     else
       echo "  -> WARNING: Antigravity permission baseline not applied (see above)"
@@ -2326,10 +2303,18 @@ if service_selected antigravity; then
     fi
   fi
 
-  # Sibling of the dev directory, so DOTFILES_DEV_DIR redirects it (#701).
-  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$DEV_DIR/agy-memory}"
   if [ -d "$AGY_MEMORY_REPO" ]; then
     echo "  -> agy-memory private repo detected at $AGY_MEMORY_REPO"
+    if [ -f "$AGY_MEMORY_REPO/bootstrap.sh" ]; then
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        run bash "$AGY_MEMORY_REPO/bootstrap.sh"
+        echo "  [DRY] Antigravity portable private defaults would be applied"
+      elif run bash "$AGY_MEMORY_REPO/bootstrap.sh"; then
+        echo "  -> Antigravity portable private defaults applied"
+      else
+        echo "  -> WARNING: Antigravity portable private defaults could not be applied"
+      fi
+    fi
     for f in GEMINI.local.md MEMORY.md; do
       if [ -f "$AGY_MEMORY_REPO/$f" ]; then
         link_file "$AGY_MEMORY_REPO/$f" "$AGY_CONFIG_DIR/$f"
@@ -2732,11 +2717,6 @@ warn_unwired_hooks() {
 }
 if service_selected claude && [ "${DRY_RUN:-0}" != "1" ]; then
   warn_unwired_hooks
-fi
-if [ "${JULES_INSTALLED:-0}" -eq 1 ]; then
-  echo "  jules_installed=1  (routine lane: 'jules login' for the CLI, ~/.config/jules/api-key for dispatch)"
-else
-  echo "  jules_installed=0  (routine lane off; install with: npm install -g @google/jules)"
 fi
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "  Mode: DRY-RUN (no destructive ops were executed)"

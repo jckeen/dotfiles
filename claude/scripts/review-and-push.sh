@@ -43,6 +43,16 @@
 #   review-and-push.sh /path/to/repo              # interactive (prompts before push)
 #   review-and-push.sh /path/to/repo --auto-push   # push automatically if safe
 #
+# Exit status:
+#   0  pushed, or declined at the confirmation prompt
+#   1  refused or failed (dirty tree, tests, gate error, receipt, push); also
+#      an Antigravity exit 3 that REVIEW_LANE_FALLBACK=block or an unavailable
+#      Codex lane refuses to fall back from
+#   2  the review gate returned a blocking verdict
+#   3  the gate that ran last could not run (its own exit 3, passed through)
+#   4  approved but not pushed: end of input at the confirmation prompt (no
+#      terminal, /dev/null or Ctrl-D) and no --auto-push (#628)
+#
 # Run this in the morning after overnight.sh finishes.
 
 # Preserve path bytes while removing only each command's output terminator.
@@ -588,7 +598,21 @@ fi
 check_review_target
 
 if [[ "$AUTO_PUSH" != "true" ]]; then
-  read -rp "Push to remote? (Y/n): " CONFIRM
+  # Without a terminal `read -p` prints no prompt and fails at end of input, and
+  # `set -e` then ended the script with a bare exit 1 right after an approval
+  # (#628). Let `read` decide rather than testing for a terminal: a caller may
+  # pipe the answer in (the shipping tests do), and only end of input, from
+  # /dev/null or Ctrl-D, means there is nobody to confirm. Say what happened
+  # and exit with its own code instead.
+  if ! read -rp "Push to remote? (Y/n): " CONFIRM; then
+    echo
+    if [[ -t 0 ]]; then
+      echo "approved but not pushed: no answer at the prompt; re-run with --auto-push, or push $REVIEWED_HEAD yourself" >&2
+    else
+      echo "approved but not pushed: no terminal to confirm on; re-run with --auto-push, or push $REVIEWED_HEAD yourself" >&2
+    fi
+    exit 4
+  fi
   if [[ "$CONFIRM" != "" && "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
     echo "Aborted. Changes remain local."
     exit 0

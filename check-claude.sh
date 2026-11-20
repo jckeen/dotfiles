@@ -106,7 +106,7 @@ done
 echo "Checking memory repo..."
 # The dev dir follows DOTFILES_DEV_DIR like setup.sh does (#701).
 DEV_DIR="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
-MEMORY_REPO="$DEV_DIR/claude-memory"
+MEMORY_REPO="${DEV_DIR%/}/claude-memory"
 MEMORY_PROJECT_DIR="$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
 MEMORY_DST="$CLAUDE_DST/projects/-${MEMORY_PROJECT_DIR}/memory"
 
@@ -337,6 +337,12 @@ fi
 # registered in settings.json — the failure mode that left every hook inert.
 if [ -x "$DOTFILES_DIR/claude/scripts/check-hooks-wired.sh" ]; then
   "$DOTFILES_DIR/claude/scripts/check-hooks-wired.sh" --quiet || true
+fi
+
+# Skill-ref drift: warn when an instruction surface tells the model to run a
+# skill that is missing or switched off in skillOverrides (unhedged).
+if [ -x "$DOTFILES_DIR/claude/scripts/check-skill-refs.sh" ]; then
+  "$DOTFILES_DIR/claude/scripts/check-skill-refs.sh" --quiet || true
 fi
 
 # Summary

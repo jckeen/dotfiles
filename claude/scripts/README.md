@@ -6,7 +6,7 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 
 ```bash
 # Health check a single repo (read-only, totally safe)
-./health-check.sh ~/dev/atlas
+./health-check.sh ~/dev/stringer
 
 # Health check all repos overnight
 ./overnight.sh
@@ -26,12 +26,11 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `overnight.sh` | Orchestrates all of the above across repos | Varies | Depends on flags |
 | `review-and-push.sh` | Classifies the committed delta, runs the gate for the **required review lane** (ADR-0008), validates the receipt, and pushes the current branch. Step 2's test command is `REVIEW_TEST_CMD` (empty means unset; whitespace-only is refused, like an empty `.review-test`, rather than reported as a passing run — #519), else the repo-root `.review-test` line, else a sniffed framework — a bun lockfile or `bunfig.toml` runs a declared `package.json` `scripts.test` as `bun run test` and only a bun project declaring none gets `bun test`, with `npm test` the fallback for a package.json and no bun; with none of those it prints a loud banner and records `tests: skipped`, because the receipt attests to a review and never to a test run (#490). The declared command runs under `bash -o pipefail -c` — not `eval`, so it cannot reach the wrapper's own variables, and with `pipefail` because a child shell does not inherit it and `<suite> \| tee log` would otherwise mask a red suite. Tests: `tests/review-and-push.test.sh` | Artifact review + push | Only pushes after validation |
 | `run-tests.sh` | Runs this repo's own suites — the same enumeration `check-tests-wired.sh` asserts is wired into CI (`tests/*.test.sh`, `tests/*.test.py`), each suite named by its filename without the `.test.*` suffix; two files deriving one name (`foo.test.sh` beside `foo.test.py`) fail discovery in every mode, naming both, since a name must select exactly one file (#518). `--list` prints the selected names and runs nothing (so `--list --changed` is how the mapping is inspected); positional names run a subset; `--changed [--base <ref>]` runs only the suites this branch's diff can affect, applying every mapping rule to each changed path: it *is* a suite's test file, it is named inside one (so a suite that imports another's fixtures is selected too), it is named inside any tracked non-test file (followed transitively to a fixpoint, so a shared library like `gate-lib.sh` or the root `lib-symlinks.sh` reaches its callers' callers' suites), or its stem names one; a changelog fragment (`changelog.d/*.md`) is test-free, so it selects nothing and never widens the run, and a diff of only fragments runs no suite (no other Markdown is exempt); `--verbose` streams every suite instead of only the failures. Without it, each suite's `PASS`/`FAIL` line prints as the suite finishes and a suite still running prints `… still running: <name> (Ns)` every `RUN_TESTS_HEARTBEAT` seconds (default 30), so a long run is visibly alive (#650). Every suite runs with `GIT_CEILING_DIRECTORIES` extended by the resolved `/tmp`, `/var/tmp` and `$TMPDIR`, so a fixture's Git discovery never reaches a repository at a temp root — such as the `/tmp/.git` Codex's sandbox creates (#621). Selecting nothing is never a green run: an unknown name and an empty `tests/` fail, and an unresolvable base, an empty diff, or *any single* changed path that reaches no suite — a deleted or renamed suite included — widens the run to every suite, since one mappable path must not speak for an unmapped sibling. The walk costs a few seconds per changed path, so a wide diff spends ~a minute deciding before it runs anything. The `*.property.test.py` suites are reported as a named SKIP when Hypothesis is absent — they fail loudly by design, which is right for CI and would make every fresh clone red. Checkers are not run here; CI runs them beside the suites. `.review-test` points `review-and-push.sh` at this script. Tests: `tests/run-tests.test.sh` | Read-only (runs the suites) | No |
-| `sync-plugins.sh` | Installs plugins listed in `$DOTFILES_DIR/claude/plugins.txt` that are not yet installed; idempotent. Installs both manifest sections — `[global]` and `[per-project]` (issue #214); enablement scoping lives in settings.json `enabledPlugins` and is checked by `PluginDriftCheck.hook.ts`. Installs are user-scope, so both this script's fast path and that hook count user-scope installs only and ignore `--scope project` plugins. Honours the saved agent-service selection (`lib-services.sh`): nothing when Claude Code is deselected, no `*@openai-codex` plugin when Codex is. Uninstalls the user-scope install of any plugin named by a `# removed: <id>` manifest line — never one merely absent from the manifest. Auto-run by `cc` at launch (pre-exec, so installs apply to the session being started); fast-path exits silently when there's no drift. Tests: `tests/plugin-drift.test.sh` (fast path + drift hook) | Install (calls `claude plugin install` / `uninstall`) | No file edits — updates plugin state |
+| `sync-plugins.sh` | Installs plugins listed in `$DOTFILES_DIR/claude/plugins.txt` that are not yet installed; idempotent. Installs both manifest sections — `[global]` and `[per-project]` (issue #214) — and runs `claude plugin disable --scope user` on each `[per-project]` plugin it installs, because install enables it globally (#720; `setup.sh` §3b does the same through `manifest_per_project_plugins` in `lib-checks.sh`); enablement scoping lives in settings.json `enabledPlugins` and is checked by `PluginDriftCheck.hook.ts`. Installs are user-scope, so both this script's fast path and that hook count user-scope installs only and ignore `--scope project` plugins. Honours the saved agent-service selection (`lib-services.sh`): nothing when Claude Code is deselected, no `*@openai-codex` plugin when Codex is. Uninstalls the user-scope install of any plugin named by a `# removed: <id>` manifest line — never one merely absent from the manifest. Auto-run by `cc` at launch (pre-exec, so installs apply to the session being started); fast-path exits silently when there's no drift. Tests: `tests/plugin-drift.test.sh` (fast path + drift hook) | Install (calls `claude plugin install` / `disable` / `uninstall`) | No file edits — updates plugin state |
 | `link-claude-profile.sh` | Wires a second Claude Code config directory for a second account: links the account-neutral entries (settings, instructions, skills, agents, plugins, `projects/`, `file-history/`, and the `todos/` and `tasks/` session sidecars; `session-env/` stays per account) to `~/.claude` and copies user-scope MCP servers from `~/.claude.json`. Never overwrites a real file, populated directory or foreign link — it reports and exits 1. `--check` reports without writing. Run by `ccw` before every launch. Tests: `tests/claude-profile.test.sh` | Install (creates symlinks) | Only inside the profile directory |
 | `check-doc-truth.sh` | Portable doc-contract checker (ADR 0005); asserts every tracked `*.md` is declared in a tier, HISTORICAL docs carry a point-in-time marker, relative links in LIVING/GENERATED docs resolve, and BANNED patterns are absent from their scoped tiers. Vendored into other repos by `/drift-sweep`, so unlike the rest of this directory it holds to a bash 3.2 floor — the macOS system bash (#424); it runs in the `doc-truth` job, a required status check, and the `doc-truth (bash 3.2)` job runs it and its tests again against a real 3.2.57. Tests: `tests/doc-truth.test.sh` | Read-only | No |
 | `gen-instruction-files.sh` | Builds the global instruction files — its own `TARGET` map is the authoritative list, currently the three local ones plus the root `AGENTS.md` cloud-agent brief — from the canonical sources in `agents/canon/` (ADR 0007) — shared rule blocks in `CANON.md`, per-tool voice in `fragments/`. `--check` verifies the committed artifacts are byte-current (run in CI via `check-agent-parity.sh`). Tests: `tests/agent-parity.test.sh` | Build (writes the three generated files) | Yes — regenerates committed artifacts |
 | `gen-agentpack.sh` | Generates `claude/AGENTPACK.yaml` (the AgentPack manifest) from the live frontmatter of `claude/skills/*/SKILL.md` and `claude/agents/*.md` plus the hand-maintained fragment `claude/agentpack-meta.json`, so the manifest can't drift from the source (issue #207). `--check` (run in CI) exits 1 if the committed manifest is stale | Generate | Yes — rewrites `claude/AGENTPACK.yaml` |
-| `jules-dispatch.sh` | Dispatches the routine catalog (`agents/routines/*.md`) to Jules over its REST API, one session per routine per repository per day (ADR 0009). Reads the API key from a file it validates itself (regular file, mode 0600, non-empty, at least 20 characters) and hands it to `curl` through a config file on stdin, so the key never reaches argv or a log. The variable holding it is unset before assignment, so an inherited export of the same name cannot carry it into a child process's environment. `curl` is invoked with `-q` first, so a `location` or `trace` line in a `~/.curlrc` cannot make the key follow a redirect or land in a trace file. The API host is a constant in the script, never read from configuration, and `curl` runs without `-L`. Resolves each repository's `source` from `GET /sources` — never constructs one — following `nextPageToken` so a repository past the first page is not mistaken for an unconnected one, and skips a repository that really is absent. Each pair's starting branch — `JULES_STARTING_BRANCH`, else the source's `githubRepo.defaultBranch.displayName` — is resolved while eligibility is decided, so a pair with neither is refused identically by a dry run and a live one and spends no slot of the daily cap. The header it injects above each routine's body states the per-run limits, the required PR label, and the conventional commit-subject types `check-commit-format.sh` enforces, since a subject outside that set makes the resulting pull request unmergeable. The ledger is validated once at startup, from the main shell where a refusal can stop the run — every query of it happens inside a command substitution, where an error would otherwise be swallowed. Idempotent per calendar day via a write-ahead ledger at `~/.local/state/jules/dispatch.jsonl` — a record is written before the request and upgraded after it, so a session created by a request that then timed out is never invisible; unresolved attempts are reported for reconciliation against `GET /sessions` and are not retried that day, and a `schedule: weekly` routine is additionally held back while its last dispatch for that repository is inside a seven-day window. A run holds an `flock` on a file in the state dir, so a manual invocation overlapping the timer is a no-op instead of a second dispatch — and because the kernel releases an `flock` when the holder dies, there is no stale lock to reclaim. Where `flock(1)` is absent it falls back to an atomic lock directory rather than running unserialized, and names the path to remove if a run was killed. A run that crosses UTC midnight stops rather than recording against the previous day, and a dispatch is not even started when less of the day remains than a request may take — a session created on one day and recorded against another would be dispatched again by the next run without counting against its cap. A failed ledger append aborts the run rather than continuing to create sessions nothing has recorded. When more pairs are eligible than the cap allows, the least-recently-dispatched pair goes first, so the cap defers work to a later day instead of starving the tail of the catalog permanently. `JULES_DAILY_CAP` (default 40) bounds the spend. Every run ends by settling what earlier ones created, and `--reconcile` runs the same pass on its own: for each `created` session in the ledger it reads `GET /sessions/{id}`, closes an open pull request the session opened with zero changed files with a one-line comment, applies `jules-routine:<routine>` (creating the label, which no repository carries until a routine PR lands there) and rewrites a title the commit-format check would reject to `chore(<routine>): …`, then records the outcome as one `"kind":"reconcile"` ledger line per settled session, carrying a `prs` array — the only API-confirmed provenance a routine PR has, and one line because the record *is* the marker that the session is done. The title governs what a squash merge lands on `main`, not the required commit-format check, which lints the subjects of the commits the PR adds: a routine PR whose bot commit subject is non-conventional stays blocked, so the pass counts it, names it in the log, and records `commit_subjects_ok: false` rather than reporting the PR as fully settled — rewriting someone else's branch is not the dispatcher's to do, which is why the conventional-subject requirement is injected into every prompt up front. That field is tri-state, because ADR-0009's custodian handoff reads the reconcile record as provenance: `true` only where the pass listed the commits of *every* pull request of the session and found nothing rejected, `false` where it listed them and one is rejected, and JSON `null` where any of them went unread (a pull request already closed or merged, an empty one it closed, a refused URL, a FAILED session, a session with no pull request) — a boolean meaning "ok" *or* "never looked" cannot be keyed on. The pull-request URL the API hands back is parsed strictly and must name `github.com` over https and the same repository the session was dispatched to, so a URL from a remote service can never become a write pointed at someone else's repository; it is matched against the whole field, one JSON value at a time and carried out of `jq` with a sentinel byte appended, so neither an embedded newline nor a trailing one (which command substitution would strip) can turn a refused value into an actionable URL — and a NUL, which no sentinel can make the shell carry, is caught inside `jq` and replaced before it reaches the pattern. Every gh write is checked rather than assumed, and every gh call the pass makes names `github.com` itself (`--repo github.com/<owner>/<name>`, `gh api --hostname github.com`), so a `GH_HOST` default cannot redirect a write to a same-named repository on another host. Each dispatch record carries the routine's `max_files`, and a non-empty pull request over that limit — open, closed or merged, since the size is checked before the closed/merged no-op — is recorded `blocked-oversized`, left unretitled with any `jules-routine:<routine>` label an earlier pass applied removed, and counted in `status.json` as `reconcile.oversized`; `max_files` and `max_prs_per_run` are capped at six digits wherever they are parsed, so a value past 2^63-1 cannot wrap in a bash comparison; a record written before the limit was persisted skips the check and its reconcile record carries `max_files: null`. `reconcile.blocked_subjects` counts rejected subjects, not pull requests. `--reconcile` takes its sessions from the ledger, so it does not require the catalog — a session outlives its routine file. A session with a terminal record is skipped without an API call and one that is still running is skipped without a record, so the pass is idempotent and never freezes an outcome early. Because a reconcile record carries the same date, routine, and repository as a dispatch, every spend query filters on the record kind — otherwise closing an empty pull request would count against the daily cap and suppress the routine it belongs to. `--dry-run` resolves and prints without writing anything, in both modes; `--report [--days N]` tallies routine PRs per week from `gh` and states in the report body when a fetch hit `JULES_REPORT_LIMIT` or a query failed, so a partial merge rate cannot look authoritative to whoever reads it; `--post` comments the table on the tracker issue. Both name `github.com` in every `gh` call as reconcile does, so `GH_HOST` cannot redirect the read or the comment. `claude/systemd/jules-dispatch.timer` would fire it daily, but the lane is paused (ADR-0009): `claude/systemd/install.sh` skips that unit, and disables a copy an earlier install enabled, unless `JULES_LANE_ENABLED=1`. Tests: `tests/jules-dispatch.test.sh` | Dispatch (creates cloud sessions that open PRs) | No local edits — creates remote sessions |
 | `check-tests-wired.sh` | Fails when a test file under `claude/scripts/tests/` or `codex/tests/` is run by no workflow: every enumerated path must appear in `ci.yml` or `smoke-install.yml` with YAML comments stripped, or in a test file those workflows already run (one level of transitivity). `OPT_OUT` lists the tests that cannot run in CI, each with its reason. Runs in the `checks` shards. Tests: `tests/check-tests-wired.test.sh` | Read-only | No |
 | `check-agent-parity.sh` | Two guards on the generated instruction files (ADR 0007). Concept parity: every canonical rule in its own `RULES` list must be present in all of `claude/CLAUDE.md`, `codex/AGENTS.md`, and `antigravity/GEMINI.md`, matched by a rule-shaped regex rather than a bare keyword, so three different voices can express the same rule. Currency: it runs `gen-instruction-files.sh --check`, so a hand-edit to any generated target fails the build. Runs in the `checks` shards, step `agent-parity (self-test + checker)`. Tests: `tests/agent-parity.test.sh` | Read-only | No |
 | `check-skill-parity.sh` | The skill-layer drift guards: every `N slash commands` / `N-agent` / `N specialized` claim in the root `README.md` must match the real number of dirs under `claude/skills/` and files under `claude/agents/` (every occurrence, not the first); the Claude and shared-agent changelog/handoff skills must emit the same section headings, or cross-tool session resume breaks; `CLAUDE-GUIDE.md`'s slash-command table must list exactly the shipped skill dirs; and every skill dir under `claude/skills/` and `agents/skills/` must have a disposition row in `agents/skill-coverage.tsv` (`shared`, `claude-only`, or `agent-only`) — no duplicate, missing, or stale names, the dirs the scope implies, and a rationale for every runtime-specific skill. Also invokes `check-workflow-invariants.py`. Runs in the `checks` shards, step `skill-parity (self-test + checker)`. Tests: `tests/skill-parity.test.sh` | Read-only | No |
@@ -39,13 +38,15 @@ Run Claude Code headless on your repos — scheduled or on-demand.
 | `check-capability-parity.py` | Validates the capability dispositions and read-only probes without launching a runtime or a hook; `--live-home` additionally reports installed-provider drift and unmodeled skill directories as advisory JSON. Presence or configuration is never taken as proof of runtime execution or hook trust. Runs in the `checks` shards, step `capability and workflow contracts`. Tests: `tests/capability-parity.test.py` | Read-only | No |
 | `check-doc-refs.sh` | Fails when a tracked Markdown doc references a hook or skill *path* that is not on disk: `<Word>.hook.ts` / `<Word>.hook.sh` must exist under `claude/hooks/`, and a `(claude\|codex\|agents\|antigravity)/skills/<name>/` form must be a real directory — and when a relative Markdown link (`[text](path)`) in a tracked doc resolves to nothing on disk, which is why an otherwise unrelated documentation edit can trip this step; external URLs, in-page anchors, and placeholder targets are skipped, code blocks and inline code are stripped first, and the docs allowlisted in the script (`CHANGELOG.md` and its `docs/changelog/` archives, `SECURITY_FINDINGS_*.md`, `Plans/`, `docs/adr/`) may name removed files on purpose and are exempt from every check. Scope is otherwise deliberately narrow — a bare slash-command like `/clear` is not treated as a skill path, since many are Claude built-ins rather than repo dirs. Runs in the `checks` shards, step `doc-refs (self-test + checker)`. Tests: `tests/doc-refs.test.sh` | Read-only | No |
 | `resolve-changelog.py` | The standard fix for a DIRTY `CHANGELOG.md` head (#561), now needed only for a branch that still edits `CHANGELOG.md` directly — new entries are `assemble-changelog.sh` fragments: after `git merge origin/main` stops on the changelog because two PRs each prepended a dated section, it keeps both sides' sections with origin's (merged first) on top and ours below, editing no entry text. It does not trust git's hunk boundaries: it reads the three versions from git's index stages (base, ours, theirs), or from diff3 markers outside a merge, splits them into `## ` sections, and treats the identical trailing run of ours and theirs as shared history. It refuses, leaving the file untouched, unless that is provably a prepend: the merge base must equal that history with the same text above it, and no heading may appear in both sides' new sections. Plain two-way markers with no merge base are refused, since they cannot prove a prepend. Merge, do not rebase (a rebase swaps the sides). `--check` reports without writing; re-running on a resolved file is a no-op. `CHANGELOG.md` itself holds the current quarter; older quarters are HISTORICAL files under `docs/changelog/`. Tests: `tests/resolve-changelog.test.py`, run in CI through `tests/doc-refs.test.sh` | Fix (edits `CHANGELOG.md`) | Yes — review with `git diff`, then stage it |
-| `assemble-changelog.sh` | Validates per-PR changelog fragments (#626); check-only, and it never writes — the name is historical, from a fold mode removed in #661. A PR never edits `CHANGELOG.md`; it adds one fragment file under `changelog.d/` — named by convention after the branch with `/` turned to `-`, though any name of letters, digits, `.`, `_` and `-` ending in `.md` is valid (checked as a whole string, so an embedded newline is refused, and no two names may differ only in case), since two branches can share a slug — holding its entry exactly as it will read there. Two open PRs then never touch the same lines, which is what made every merge to `main` force a conflict and a full re-gate on every other PR — and the both-sides-prepended head `resolve-changelog.py` refuses. Every fragment line is allowlisted by how it starts, so the parsed surface is finite: blank; a `## YYYY-MM-DD — TYPE(SCOPE)?: SUMMARY` heading at column 0 with single spaces and no tab, the type from the set `check-commit-format.sh` enforces and the summary holding no `[` `]` `&` (a link or entity can render as nothing) and at least one letter or digit, each entry needing at least one bullet; a `### ` subsection; a bullet (`- ` or `* ` indented 0–3 spaces); or a continuation indented 2+ spaces. Bullet and continuation text may not start with `<` `>` `|` `#` `=` — as written or after stripping every leading list prefix (whitespace, `- ` `* ` `+ ` and `1. ` `1) ` markers), so a `>` behind a nested list marker is refused rather than stripped — or be only `-` `*` `_` `=` `:` `|` characters (a thematic break, setext underline or table delimiter row). No line may contain, anywhere: `<!--`, `-->`, a triple backtick or `~~~`; `<` followed by a letter, `/`, `!` or `?` (inline HTML, refused even inside inline code, so placeholders are written `NAME`, not in angle brackets); `]:` (a link reference definition renders as nothing); or a control byte other than tab (#664). Inline code is otherwise fine. Several `## ` entries may share a fragment. `--check` refuses a line of any other shape (one message names the allowed shapes), a bad heading or date, an entry without a bullet, content before the first heading, a tab in a heading line, the same `##` heading twice among the pending fragments (in one file or two), CRLF, a non-`.md` or non-slug file in `changelog.d/`, a symlinked or unreadable `changelog.d/` or `CHANGELOG.md`, an unreadable fragment, a heading that is already an exact line anywhere in `CHANGELOG.md` (folded once already; a false match only refuses), a missing `CHANGELOG.md` or one whose line 1 is not the `# ` title, and a region above its first `## ` line holding anything but blank lines, that one title and the script's own pointer lines (constants `POINTER_1` / `POINTER_2`) verbatim; nothing below that line is read as Markdown. It is a pure content validator: it reads the working tree (the current directory, or `--root DIR`), runs no git and writes nothing; with no `--check` it prints usage and exits 2. The PR scope rule — a PR adds at most one fragment, modifies or renames none already on `main`, and adds no `## ` entry to `CHANGELOG.md` alongside one — needs the PR's diff, so it is not part of this script, and it is **not enforced yet**: reviewers check it by hand until the operator applies the CI patch `~/.claude/handoffs/2026-10-19-dotfiles-operator-pass/ci-changelog-check.patch`, which adds it as a `doc-truth` workflow step. Folding is a reviewed manual step at release or handoff time, in a `docs: fold changelog fragments` PR: copy each fragment's entries above `CHANGELOG.md`'s first `## ` entry, newest date first, then `git rm` the fragments. It is not a bot push to `main`, because `main`'s required status checks refuse a commit that has not run them and a `GITHUB_TOKEN` push would never start them. Run `--check` before pushing a fragment. CI runs the content check today, through `tests/doc-refs.test.sh` (the script's self-test plus `--check` on the checkout's own fragments). Bash 3.2-safe, no `fd`/`rg`. Tests: `tests/assemble-changelog.test.sh`, run in CI through `tests/doc-refs.test.sh` | Read-only | No |
+| `assemble-changelog.sh` | Validates per-PR changelog fragments (#626); check-only, and it never writes — the name is historical, from a fold mode removed in #661. A PR never edits `CHANGELOG.md`; it adds one fragment file under `changelog.d/` — named by convention after the branch with `/` turned to `-`, though any name of letters, digits, `.`, `_` and `-` ending in `.md` is valid (checked as a whole string, so an embedded newline is refused, and no two names may differ only in case), since two branches can share a slug — holding its entry exactly as it will read there. Two open PRs then never touch the same lines, which is what made every merge to `main` force a conflict and a full re-gate on every other PR — and the both-sides-prepended head `resolve-changelog.py` refuses. Every fragment line is allowlisted by how it starts, so the parsed surface is finite: blank; a `## YYYY-MM-DD — TYPE(SCOPE)?: SUMMARY` heading at column 0 with single spaces and no tab, the type from the set `check-commit-format.sh` enforces and the summary holding no `[` `]` `&` (a link or entity can render as nothing) and at least one letter or digit, each entry needing at least one bullet; a `### ` subsection; a bullet (`- ` or `* ` indented 0–3 spaces); or a continuation indented 2+ spaces. Bullet and continuation text may not start with `<` `>` `|` `#` `=` — as written or after stripping every leading list prefix (whitespace, `- ` `* ` `+ ` and `1. ` `1) ` markers), so a `>` behind a nested list marker is refused rather than stripped — or be only `-` `*` `_` `=` `:` `|` characters (a thematic break, setext underline or table delimiter row). No line may contain, anywhere: `<!--`, `-->`, a triple backtick or `~~~`; `<` followed by a letter, `/`, `!` or `?` (inline HTML, refused even inside inline code, so placeholders are written `NAME`, not in angle brackets); `]:` (a link reference definition renders as nothing); or a control byte other than tab (#664). Inline code is otherwise fine. Several `## ` entries may share a fragment. `--check` refuses a line of any other shape (one message names the allowed shapes), a bad heading or date, an entry without a bullet, content before the first heading, a tab in a heading line, the same `##` heading twice among the pending fragments (in one file or two), CRLF, a non-`.md` or non-slug file in `changelog.d/`, a symlinked or unreadable `changelog.d/` or `CHANGELOG.md`, an unreadable fragment, a heading that is already an exact line anywhere in `CHANGELOG.md` (folded once already; a false match only refuses), a missing `CHANGELOG.md` or one whose line 1 is not the `# ` title, and a region above its first `## ` line holding anything but blank lines, that one title and the script's own pointer lines (constants `POINTER_1` / `POINTER_2`) verbatim; nothing below that line is read as Markdown. It is a pure content validator: it reads the working tree (the current directory, or `--root DIR`), runs no git and writes nothing; with no `--check` it prints usage and exits 2. The PR scope rule — a PR adds at most one fragment, modifies or renames none already on `main`, and adds no `## ` entry to `CHANGELOG.md` alongside one — needs the PR's diff, so it is not part of this script: the required `doc-truth` job in `ci.yml` enforces it on pull requests, in its step `Changelog fragments (PR scope)`. Folding is a reviewed manual step at release or handoff time, in a `docs: fold changelog fragments` PR: copy each fragment's entries above `CHANGELOG.md`'s first `## ` entry, newest date first, then `git rm` the fragments. It is not a bot push to `main`, because `main`'s required status checks refuse a commit that has not run them and a `GITHUB_TOKEN` push would never start them. Run `--check` before pushing a fragment. CI runs the content check in the `doc-truth` job, step `Changelog fragments (content check)`, and also through `tests/doc-refs.test.sh` (the script's self-test plus `--check` on the checkout's own fragments). Bash 3.2-safe, no `fd`/`rg`. Tests: `tests/assemble-changelog.test.sh`, run in CI through `tests/doc-refs.test.sh` | Read-only | No |
 | `check-no-personal-data.sh` | Public-repo leak guard: fails when a *tracked* file carries a machine-specific home path embedding a real local username (`/home/<name>/…`, `/Users/<name>/…`, `C:\Users\<name>\…`). The backstop for a stray `git config --global` write, which lands in the tracked `.gitconfig` — real paths belong in the untracked `.gitconfig.local`. Runs in the `checks` shards, step `no-personal-data (self-test + checker)`. Tests: `tests/no-personal-data.test.sh` | Read-only | No |
 | `check-install-integrity.sh` | Two static fresh-clone guards, promoted from discipline into CI; no install is performed. Exec bits: every tracked `*.sh` with a shebang must be mode 100755 in the git index, because `core.fileMode=false` locally lets a 100644 script be committed and any `[ -x … ]` guard then skips it silently. Marketplace arms: every `@marketplace` in `claude/plugins.txt` needs a matching registration arm in `setup.sh`. Runs in the `checks` shards, step `install-integrity (self-test + checker)`. Tests: `tests/install-integrity.test.sh` | Read-only | No |
 | `check-commit-format.sh` | Conventional-commit lint over the commits a pull request adds — the backstop the `conventional-commit.sh` hook cannot be, since that binds only inside a Claude session and not to a commit made with `--no-verify` or outside Claude. Validates each subject as `type(scope)?!?: description` against the enforced type set; merge commits and revert auto-messages are skipped. Runs in the `commit-format` job on pull requests only, step `Lint PR commit messages (conventional commits)`. Tests: `tests/commit-format.test.sh` | Read-only | No |
+| `check-ci-efficiency.py` | Advisory audit for the CI cost standard (the full suite runs once per merge, every other run is cheap), not a gate: a finding is a lead and a clean result proves nothing, since GitHub evaluates these settings at run time (the script header lists the known blind spots). Read-only and offline, it parses the YAML (needs PyYAML; exit 3 without it) and reports a checkout where it cannot confirm that a `pull_request` workflow cancels a superseded run (it recognises a short list of `concurrency` forms and reports the rest instead of guessing), or whose `.github/dependabot.yml` has an `updates` entry with no routine grouping. `--all DIR` audits every git checkout directly in `DIR`. `pull_request_target` workflows are not judged. A workflow that must not cancel carries a `# ci-efficiency: no-cancel — reason` line. Path-selected jobs, repeat runs on the default branch and merge queues are per-repo design decisions it does not judge. |
 | `check-hooks-wired.sh` | Warns when a hook file under `claude/hooks/` is not named among the live `~/.claude/settings.json` hook commands — the wiring lives in the private `claude-memory` repo, which is how every documented hook once went inert with nothing to catch it. It also checks the event a hook must be registered on where the filename alone is not enough (`EVENT_WIRING`: `PluginDriftCheck.hook.ts` on both `SessionStart`, for install drift and the full scan, and `UserPromptSubmit`, for its mid-session rescan, #618). Advisory: exit 0 unless `--strict`. Not run in CI, which cannot see private settings; it is a local guard, run at every `cc` launch via `check-claude.sh`. CI checks the public template instead (`tests/settings-example.test.sh`). A hook the live settings omit is not reported when `claude/settings-optout.txt` lists it, unless the live settings file sets `"env": {"CHECK_HOOKS_REQUIRE_ALL": "1"}` (a full private setup does), which requires every hook; the key is read from the file, never the process environment. `setup.sh`'s summary warning runs this same check | Read-only | No |
+| `check-skill-refs.sh` | Warns when orchestrate's `SKILL.md`, `claude/CLAUDE.md`, `claude/MULTI-AGENT.md` or CLAUDE-GUIDE's "The Workflow" section tells the model to run a skill (`/name`, or "the `name` skill") that is neither a `claude/skills/` dir nor a bundled skill or built-in command, or that is `"off"` in `skillOverrides`; a ref hedged with "if available" or "where enabled" on its line or the next is exempt. It reads the live `~/.claude/settings.json`, which lives in the private `claude-memory` repo, so it is a local guard run at every `cc` launch via `check-claude.sh`, not in CI (CI runs its self-test). Advisory: exit 0 unless `--strict` (`--quiet` drops the success line), and a skip when `jq` or the settings file is missing | Read-only | No |
 | `check-deployed-orphans.sh` | Sweeps the *deployed* `~/.claude` for regular files left behind by a decommissioned integration — the debris `check-claude.sh`'s symlink audit never looks at (ADR 0002 removed PAI, yet its hook framework survived as regular files). `--strict` turns the report into a failure. The checker itself is not run in CI, which has no live `~/.claude`; run it by hand. Its fixtures point it at throwaway dirs and do run, in the `checks` shards, step `deployed-orphans (self-test)`. Tests: `tests/deployed-orphans.test.sh` | Read-only | No |
-| `harvest-codex-comments.sh` | Turns the GitHub Codex bot's inline review comments on a PR into **one issue per PR** (#556), titled `Codex review of #<n>: <PR title>`: a checklist with one item per comment carrying its priority badge, `path:line`, link, and the full comment body (no body it writes exceeds a budget under GitHub's body-size limit: an item that does not fit whole drops its quoted text, and items that fit in neither form go to a `(continued)` issue carrying the same PR marker). Dedup reads one REST prefetch of every issue body (shared with the review gate via `gate-lib.sh`): a `codex-review-pr` marker finds the PR's newest issue in any state, and new comments are **appended to its body** — re-read just before the edit, so ticked boxes survive and a comment a concurrent run already appended is not added again; a closed issue is reopened — rather than filed again; a per-comment `codex-comment-id` marker keeps any comment, including one tracked by a legacy per-comment issue, from being added twice. Appending edits the body, not an issue comment, because the prefetch reads bodies only. Outdated and resolved comments are skipped (#159). Applies `codex-finding`, plus `instruction-surface` when a comment's path matches the Codex gate's self-review guard regex, copied verbatim into the script and compared by the tests (#557); a create rejected over labels retries with `codex-finding` alone before dropping labels, and every run re-checks both labels on every issue carrying the PR marker (continuations included), so a failed label write is repaired later. Runs at PR close from `.github/workflows/harvest-codex-comments.yml` (merged same-repo PRs only, under `GITHUB_TOKEN`, failing the run when a write fails; #555), nightly from the cloud docs-steward routine as a backstop, and early from the `PreMergeCodexHarvest.hook.sh` hook; the markers make every pair of runs idempotent. `--dry-run` writes nothing. Always exits 0. Tests: `tests/harvest-codex-comments.test.py` (also covers the hook's `--auto` note) | Issue writes (create, or edit one body) | No |
+| `harvest-codex-comments.sh` | Turns the GitHub Codex bot's inline review comments on a PR into **one issue per PR** (#556), titled `Codex review of #<n>: <PR title>`: a checklist with one item per comment carrying its priority badge, `path:line`, link, and the full comment body (no body it writes exceeds a budget under GitHub's body-size limit: an item that does not fit whole drops its quoted text, and items that fit in neither form go to a `(continued)` issue carrying the same PR marker). Dedup reads one REST prefetch of every issue body (shared with the review gate via `gate-lib.sh`): a `codex-review-pr` marker finds the PR's newest issue in any state, and new comments are **appended to its body** — re-read just before the edit, so ticked boxes survive and a comment a concurrent run already appended is not added again; a closed issue is reopened — rather than filed again; a per-comment `codex-comment-id` marker keeps any comment, including one tracked by a legacy per-comment issue, from being added twice. Appending edits the body, not an issue comment, because the prefetch reads bodies only. Outdated and resolved comments are skipped (#159). Applies `codex-finding`, plus `instruction-surface` when a comment's path matches the Codex gate's self-review guard regex, copied verbatim into the script and compared by the tests (#557); a create rejected over labels retries with `codex-finding` alone before dropping labels, and every run re-checks both labels on every issue carrying the PR marker (continuations included), so a failed label write is repaired later. Runs from `.github/workflows/harvest-codex-comments.yml` at PR close (#555) and again on each review the bot submits after the merge (#617), for merged same-repo PRs only, under `GITHUB_TOKEN`, failing the run when a write fails; fork PRs are harvested by running the script by hand. It also runs early from the `PreMergeCodexHarvest.hook.sh` hook; the markers make every pair of runs idempotent. `--dry-run` writes nothing. Always exits 0. Tests: `tests/harvest-codex-comments.test.py` (also covers the hook's `--auto` note) | Issue writes (create, or edit one body) | No |
 | `codex-threads.sh` | Lists the GitHub Codex bot's unresolved PR review threads (`list --pr N`, or `--merged-since YYYY-MM-DD` across merged PRs) as TSV: PR, thread id, `path:line`, priority, outdated flag, title, link. Closes one out with `resolve --thread ID --reply TEXT`, which replies first and then resolves, and refuses an empty reply or a thread the bot did not open. Use it to answer each bot finding before merge, since the `codex-review` ruleset requires resolved threads. Resolving a PR's last bot thread also starts `codex-findings.yml`, which clears the PR's `codex-findings` label (GitHub has no workflow trigger for a resolved thread). Tests for that workflow's embedded labelling script: `tests/codex-findings-label.test.sh`. A failed or truncated read exits 1 rather than printing a partial list. Tests: `tests/codex-threads.test.sh` | Thread reply and resolve (`resolve` only) | No |
 | `fleet-codex-review.sh` | Rolls the `codex-review` merge hold (`.github/workflows/codex-review.yml`) and the `codex-findings` label workflow (`.github/workflows/codex-findings.yml`) out across the fleet: per repo it either opens a PR carrying whichever canonical workflows are missing or out of date (auto-merge on) or, once both are current on the default branch, creates a dedicated `codex-review` ruleset requiring the `codex-review` status and resolved review threads, then starts a `workflow_dispatch` run that evaluates every open PR. Never creates the ruleset first, since a required status nothing posts would hold every PR; never force-resets a leftover rollout branch. Repo lists `ENFORCE` / `ADVISORY` live in the script (advisory repos still take direct pushes, so they get the workflow only). `--check` (default) writes nothing; re-run `--apply` after each rollout PR merges. Tests: `tests/fleet-codex-review.test.sh`; the workflow's embedded status script: `tests/codex-review-status.test.sh` | Branch, file, PR and ruleset writes on other repos (`--apply` only) | No |
 
@@ -65,8 +66,9 @@ Beyond the per-script suites named in the table above:
 | `tests/review-receipt.property.test.py` | Hypothesis properties for `classify_tier` against an independently written oracle — a risk token or glob, an active file mode, a diff over either captured ceiling (lines or bytes), a policy missing the byte ceiling, or an unenumerable path list can never reach tier 1 — plus single-leaf receipt tampering refused by `check` |
 | `tests/setup-fuzz-layouts.test.sh` | Seeded fuzzer over `setup.sh --yes --dry-run`: pseudo-random `$HOME` layouts (`.bashrc`, `.gitconfig`, `.claude`, `~/.agents/skills`, dangling links, a bun stub, `~/.codex`) each asserted byte-identical before and after. `SEED` reproduces a run and is printed on failure; `LAYOUTS` sets the count |
 | `tests/settings-example.test.sh` | The public counterpart of `check-hooks-wired.sh`: every `claude/hooks/*` file is registered in `claude/settings.example.json` unless `claude/settings-optout.txt` names it with a reason, nothing registered is missing, `check-hooks-wired.sh --strict` passes on the template yet still flags a hook missing that the list does not name, every command survives a `$HOME` with spaces, `statusLine` runs `statusline.sh`, the seed runs before the Claude plugin install, the template holds no private keys, the symlink pass never links it, the README `bootstrap.sh` recipe's `--check` is read-only, and `setup.sh`'s `seed_claude_settings` creates `~/.claude/settings.json` once, never overwrites one, and only previews under `--dry-run` (#588). Run from `setup-dry-run.test.sh` |
-| `tests/statusline.test.sh` | `claude/statusline.sh` renders both lines and its ledger row under the default bash, `bash --posix`, and `$STATUSLINE_BASH3` when it names a bash 3.x (skipped when unset; the settings template runs the script with `bash`, which is 3.2 on macOS); plus a static scan for bash 4+ builtins. Run from `setup-dry-run.test.sh` |
+| `tests/statusline.test.sh` | `claude/statusline.sh` renders both lines and its ledger row under the default bash, `bash --posix`, and `$STATUSLINE_BASH3` when it names a bash 3.x (skipped when unset; the settings template runs the script with `bash`, which is 3.2 on macOS); plus a static scan for bash 4+ builtins. Run from `setup-dry-run.test.sh`, and with `$STATUSLINE_BASH3` set to the real bash 3.2.57 build in the `doc-truth (bash 3.2)` job |
 | `tests/hook-guards.test.sh` | Command parsing in the PreToolUse Bash hooks: `conventional-commit.sh` extracts without `grep -P` (a shim rejects it), reads multi-line and blank-leading heredoc messages, and fails closed on an unreadable one; `worktree-guard.sh` blocks a branch switch anywhere in a compound command in a contended primary checkout, quoted options and separators included, while `git worktree` commands without a branch-op word and a `--` pathspec stay allowed; `PreMergeCodexHarvest.hook.sh` runs the harvester only for a command that starts with the merge command. Run from `setup-dry-run.test.sh` |
+| `tests/check-skill-refs.test.sh` | `check-skill-refs.sh` against a fixture repo and a temp `HOME`: an unhedged ref to an `"off"` skill fails `--strict`, the same ref hedged with "if available" or "where enabled" passes, paths, URLs, `changelog.d/` and `3/5` are not refs, a missing skill is flagged and an existing one is not, and a missing `settings.json` skips with exit 0 |
 | `tests/lib-snapshot.sh` | Not a suite — the shared full-fidelity directory snapshot (every path, file hash, and symlink target) sourced by `setup-dry-run.test.sh` and `setup-fuzz-layouts.test.sh` so both compare identically |
 
 Hypothesis is pinned in `tests/requirements-property.txt` and installed by the
@@ -82,8 +84,9 @@ characters and never split a character, so a non-ASCII request cannot produce a
 fragment several times the intended size. Intermediate acknowledgments cannot
 authorize a push.
 The helper `review-multipart.py` verifies native persisted inputs, rejects
-compaction, and checks the observed model window against the native bundled
-catalog. Larger context is scoped to the same model's supported capacity. Missing
+compaction, requires every native turn to record the read-only sandbox with
+`approval_policy` `never` (so the model could not escalate out of it, #651), and
+checks the observed model window against the native bundled catalog. Larger context is scoped to the same model's supported capacity. Missing
 or changed history, unsupported CLI metadata, and incomplete reviews fail closed.
 The normal setup links the helper alongside the gate; install them together.
 Gate or helper changes require independent review outside the configured gates.
@@ -94,15 +97,15 @@ After an overnight run, you don't read every diff. You run:
 
 ```bash
 # Review and push one repo (prompts before pushing)
-./review-and-push.sh ~/dev/atlas
+./review-and-push.sh ~/dev/stringer
 
 # Review and push all repos
-for repo in ~/dev/atlas ~/dev/stringer ~/dev/smss; do
+for repo in ~/dev/beacon ~/dev/stringer ~/dev/smss; do
   ./review-and-push.sh "$repo"
 done
 
 # Auto-push after tests, the required review gate, and receipt validation
-./review-and-push.sh ~/dev/atlas --auto-push
+./review-and-push.sh ~/dev/stringer --auto-push
 ```
 
 What `review-and-push.sh` does:
@@ -117,11 +120,21 @@ What `review-and-push.sh` does:
    gate for the **required lane** with `--require --committed` (ADR-0008). A
    tier-1 diff dispatches no gate: the wrapper records the exemption receipt
    itself, so a docs-only push never depends on a reviewer's size limits (#482).
-4. Prompts for confirmation, unless `--auto-push` was selected.
+4. Prompts for confirmation, unless `--auto-push` was selected. A caller may
+   pipe the answer in. End of input at the prompt (stdin from `/dev/null` in an
+   agent or background run, or Ctrl-D) means nobody can confirm, so it prints
+   `approved but not pushed: ...; re-run with --auto-push, or push <sha>
+   yourself` and exits 4 (#628).
 5. Validates the receipt after confirmation, immediately before push, naming the
    lane it dispatched. That enforces the diff's lane requirement and also
    requires the review this run performed to still be approved.
 6. Pushes the reviewed commit to the current branch with an explicit refspec.
+
+Exit status: `0` pushed, or declined at the prompt; `1` refused or failed
+(including an Antigravity exit 3 that `REVIEW_LANE_FALLBACK=block` or an
+unavailable Codex lane will not fall back from); `2` a blocking verdict; `3`
+the gate that ran last could not run; `4` approved but not pushed, because
+input ended at the confirmation prompt and there was no `--auto-push`.
 
 Blocking findings, failed reviewer execution, and missing or stale receipts
 prevent pushing. Gate exit 0 alone does not prove a review completed: explicit
@@ -164,6 +177,10 @@ Committed scope keeps unrelated working changes out of the push review even
 when the fetch upstream is current and the selected push fork is behind.
 Dirty instruction surfaces still block committed review. An explicit
 `--uncommitted` review includes ignored instruction files in its review target.
+An ignored `__pycache__` beside a skill or agent script counts too (#581): a
+`.pyc` can carry code its `.py` does not, and nothing short of recompiling
+proves they match. `run-tests.sh` writes no bytecode (#633); set
+`PYTHONDONTWRITEBYTECODE=1` when running such scripts by hand.
 It covers both staged changes and later workspace edits.
 Text diffs preserve physical lines, including embedded control characters,
 and quote filenames in their headers.
@@ -241,6 +258,14 @@ result, and artifact receipt. Native Codex handles terminal cancellation and
 its tool processes. Send cancellation to the foreground job; a signal sent
 only to the Bash wrapper may wait until the current command returns. Observed
 cancellation invalidates approval, including during receipt creation.
+Exit 2 is only ever an exit a gate chose (#515). Bash 5.2 can fail to run a
+signal handler when the signal lands while it re-parses a command substitution
+(fixed in bash 5.3), and the shell then ends with status 2 by itself. Each gate's
+EXIT handler catches a status 2 that no `exit` command produced: the Codex gate
+ends it as a cancellation (exit 3, lane invalidated), the Antigravity gate exits
+1, and either still exits 2 when the reviewer's output already carries a
+verdict. Where bash is not checking command status (a condition, a `set +e`
+region) the same signal is dropped and the gate runs on to its verdict.
 
 The gate provides no hard execution deadline or detached-process containment.
 Unattended jobs that require those guarantees must obtain them from their
@@ -259,10 +284,10 @@ someone chose to run.
 
 | Subcommand | What it does |
 |---|---|
-| `review-receipt.py lane --repo . --scope committed [--base <ref>]` | Read-only. Prints `{tier, reason, risk_paths, required_lane}` and **mints nothing** — no receipt, no attempt marker, no run directory, so asking cannot invalidate an approval already in hand |
-| `review-receipt.py check --repo . --head <sha> [--base <ref>]` | Validates shipping evidence. Recomputes the classification on the re-captured patch, refuses a mismatch, and refuses a receipt whose lane ranks below the requirement. Checking by hand, run it with **no** `--reviewer` — it enforces the lane requirement without your needing to know which lane ran. Naming a lane additionally requires that lane's own receipt to be current, which is why `review-and-push.sh` names the lane it dispatched |
+| `review-receipt.py lane --repo . --scope committed [--clean-worktree] [--base <ref>]` | Read-only. Prints `{tier, reason, risk_paths, required_lane}` and **mints nothing** — no receipt, no attempt marker, no run directory, so asking cannot invalidate an approval already in hand. `--clean-worktree` (requires `--scope committed`) classifies from committed Git objects only so repos with untracked `.claude/settings.json` or `.env*` can route cleanly |
+| `review-receipt.py check --repo . --head <sha> [--base <ref>]` | Validates shipping evidence. The re-capture uses the base commit pinned when the review began, and the receipt must cover the current merge base of HEAD and the base. A base tip that moved on, for example because a sibling merged, therefore does not void it; a changed HEAD, tree or merge base does (#680). Recomputes the classification on the re-captured patch, refuses a mismatch, and refuses a receipt whose lane ranks below the requirement. Checking by hand, run it with **no** `--reviewer` — it enforces the lane requirement without your needing to know which lane ran. Naming a lane additionally requires that lane's own receipt to be current, which is why `review-and-push.sh` names the lane it dispatched. A receipt minted under `--clean-worktree` binds to pure Git objects (`head`, `tree`, `base`, patch digests, `changed_paths`, `changed_modes`, committed `instruction_links`) rather than caller-worktree hashes |
 | `review-receipt.py stats --repo . [--since-days N]` | Lane × outcome counts from `<git-dir>/review-receipts/ledger.jsonl`, plus how often the Antigravity lane degraded to Codex |
-| `review-receipt.py capture --repo . --scope <s> --reviewer <lane> [--base <ref>]` | The gates' snapshot step. Opens this lane's attempt (retiring only this lane's receipt) and prints the run directory; touches no other lane (#499) |
+| `review-receipt.py capture --repo . --scope <s> --reviewer <lane> [--receipt-repo <dir>] [--base <ref>]` | The gates' snapshot step. Opens this lane's attempt (retiring only this lane's receipt) and prints the run directory; touches no other lane (#499). `--receipt-repo` requires `--scope committed` and a distinct owned clean worktree sharing the same `git-common-dir` (supporting linked worktrees and `git init --separate-git-dir` primary checkouts) and pinned `HEAD`: the gate rejects inherited Git routing overrides, materializes `HEAD` from raw Git objects into the detached worktree (with explicit per-worktree `GIT_INDEX_FILE`, rejecting escaping symlinks, and without running Git smudge filters or hooks), and captures from the clean worktree while receipts, attempt markers, blocks, retained outputs, and ledger entries land in `<receipt-repo>`'s git-dir (live installed reviewer/gate surfaces resolving inside `<receipt-repo>`, including `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `AGENTS.override.md`, nested skill/rule links, and the selected reviewer executable, must still be clean) |
 | `review-receipt.py claim --snapshot <run>/snapshot.json` | The gates' commitment step, called once a gate can reach a verdict. Retires every other lane's receipt and attempt, then marks this attempt claimed, which `complete` requires. A superseded attempt still retires every lane, its own included, before it refuses (fail closed), since its verdict may be blocking |
 | `review-receipt.py begin …` | Backward-compatible `capture` then `claim`, same arguments as `capture` |
 | `review-receipt.py block --snapshot <run>/snapshot.json` | The gates' blocking-verdict step (#573). Records a durable marker for the snapshot's artifact (base, head, scope, patch digest), stamped with the verdict time. Needs no live, claimed or unsuperseded attempt |
@@ -276,7 +301,7 @@ never escalates the lane: a large ordinary diff is still ordinary.
 
 Tier 1 has two captured size ceilings, both in the receipt's `policy` so the
 two lanes and `check` share one answer (#494): `tier1_max_lines` (default 200,
-override `GATE_TIER1_MAX_LINES`) and `tier1_max_bytes` (default 65536, **no
+override `GATE_TIER1_MAX_LINES`) and `tier1_max_bytes` (default `TIER1_MAX_BYTES` in `review-receipt.py`, **no
 environment override on purpose** — `review-and-push.sh` classifies with its own
 `lane` call before any gate runs, so a knob only the gates honoured would make
 the wrapper choose the tier-1 skip and then refuse to record the exemption it had
@@ -312,11 +337,13 @@ claimed, so a gate cannot record beside the other lane's receipt.
 A gate that degrades (exit 3) after capture — agy missing, a diff above a size
 cap, a failed or partial run, an unverifiable model pin under `--require` — never
 claimed, so the other lane's approval stays valid: a degraded lane is not a
-verdict (#499). Partial output that already carries blocking findings is a
-verdict and claims, and so is a failed local compile/lint check in the
-Antigravity gate, an Antigravity run cancelled after agy wrote blocking
-findings, and a failed or cancelled Codex run whose output is not verifiably
-free of blocking findings (exit 2, not 3). A verifiably wrong model (exit 2) claims nothing, since its
+verdict (#499). Output from a failed, timed-out or cancelled run is held to the
+same parse as a completed run's (#579): in either gate, output that is not
+verifiably free of blocking findings is a verdict and claims (exit 2, not 3).
+For Antigravity that is an anchored P0–P2 line, a stray priority token on
+another line, or text that is neither finding lines nor a whole-verdict `LGTB`;
+absent output, `LGTB` and P3-only output stay a degraded lane. A failed local
+compile/lint check in the Antigravity gate is a verdict too. A verifiably wrong model (exit 2) claims nothing, since its
 review is not evidence, and neither does a clean run whose pin could not be
 verified, which records no receipt either; its blocking exits still claim. Two consequences remain: a review already in flight in
 the other lane can no longer record its outcome once a newer one claims, and a
@@ -336,6 +363,19 @@ lanes both lose and one reruns. `check` captures lock-free, so a slow check neve
 takes the lock only for its deciding assertion — the attempt still live and the
 receipt still the one it validated — so a claim landing after its validation
 makes it refuse instead of approving a retired receipt (#533).
+
+**The reviewer's output outlives the run (#788).** The Codex gate deletes its
+working files on every exit and only an approval stores the output in a
+receipt, so `retain` copies the output, byte for byte, to
+`<git-dir>/review-receipts/reviews/<artifact>.<lane>.<digest>.json` as soon as
+it exists: before the claim, the schema check and every abort path. The gate
+prints the path only after the blocking marker below is written, because a
+write to a closed terminal ends the shell: the Codex gate keeps the output
+and records the marker silently the moment the reviewer returns, and again
+from its exit and cancellation handlers, which ignore `SIGPIPE`. The newest
+records are kept and older ones pruned
+(`RETAINED_REVIEWS` in `review-receipt.py`). A record is evidence only:
+nothing reads it to reach a verdict, clear a marker or accept a receipt.
 
 **A blocking verdict is a durable marker, not only a token race (#573).** Every
 blocking exit of both gates first runs `block`, which writes
@@ -363,7 +403,9 @@ Low-severity findings never block a push; the gate files them as GitHub issues
 so they are not lost. Dedup is keyed on the **location** — the file a finding
 points at — not on its title, because Codex rewords titles between runs and a
 title-keyed dedup once filed one fixture finding sixteen times. Every filed
-issue carries a hidden `<!-- codex-gate-loc:<owner/repo>:<file> -->` marker;
+issue carries a hidden `<!-- codex-gate-loc:<owner/repo>:<file> -->` marker
+(or `codex-gate-loc2` with the name percent-encoded, for a name that could
+otherwise be read as comment syntax);
 before filing, the gate fetches the repo's `codex-review` issues once and
 matches on that marker:
 
@@ -373,6 +415,16 @@ matches on that marker:
 | Closed as *not planned* | Prints `accepted (#N), skipping` and files nothing |
 | Closed as *completed* | Files a fresh issue — the fix regressed |
 | None | Files a new issue, marker included |
+
+New findings of one kind are filed together (#761). The review schema gives
+every finding a `category`, and the reviewer is asked to reuse one category for
+the same kind of defect. When new findings share a category across two or more
+files, the gate files a single issue that lists every location as a checklist
+item and carries one marker per file, so a later finding in any of those files
+comments on that issue, and closing it as *not planned* accepts all of them. A
+category seen in only one new file is filed under the finding's own title as
+before. The category is reviewer text: it is reduced to a lowercase slug before
+it reaches a title, and it only ever groups findings.
 
 **Closing an issue as *not planned* is the suppression mechanism.** Accepting a
 finding needs no config file: close it that way and the gate stops re-filing
@@ -387,19 +439,25 @@ per line, `#` comments, `*` spanning `/`:
 
 ```
 claude/scripts/tests/*
-agents/routines/*
+claude/skills/*
+agents/skills/*
+antigravity/skills/*
 AGENTS.md
+agents/canon/*
+claude/MULTI-AGENT.md
+changelog.d/*
 ```
 
 Those paths are directive **by design**: gate fixtures embed injected verdicts,
-prompt-injection payloads, and synthetic credential markers, and Jules routine
-prompts plus the generated root `AGENTS.md` are instructions for a cloud agent
-(ADR-0009), so a reviewer flagging them is reporting the fixture or the prompt
-rather than a defect. The exemption is **by form, not by effect** (#484): the
+prompt-injection payloads, and synthetic credential markers, and skill bodies,
+the instruction canon, the multi-agent playbook and the generated root
+`AGENTS.md` are instructions for an agent (a changelog fragment quotes them), so a
+reviewer flagging them is reporting the fixture or the prompt rather than a
+defect. The exemption is **by form, not by effect** (#484): the
 reviewer is told not to report an instruction-like string there as a finding
 *about this repository's instructions*, but a directive whose effect would be to
 bypass a limit, skip or disable a check/review/gate/test, weaken a guard, or
-expose credentials is still reported — the routine prompts are live prompts, so
+expose credentials is still reported — skills and the brief are live prompts, so
 adding a glob must never retire the prompt-injection check for what runs under
 it. The globs only
 steer the reviewer — matching paths **stay in the review scope** and are still
@@ -428,6 +486,41 @@ those sources.
 An override records no independent approval by itself; retain the actual
 review evidence and validate the final artifact receipt before shipping.
 
+### Clean worktree committed reviews (`--clean-worktree`)
+
+Repositories that keep untracked operator-local files in their working tree
+(for example `.claude/settings.json` or `.env*`) cannot pass an ordinary
+`--committed` snapshot when untracked files are visible in the workspace. Pass
+`--committed --clean-worktree` to `codex-review-gate.sh` or
+`antigravity-review-gate.sh` (and `--clean-worktree` with `--scope committed`
+to `review-receipt.py lane`):
+
+- `gate-lib.sh` refuses inherited Git routing/config overrides, creates a private
+  `0700` detached worktree of pinned `HEAD` in temp storage, materializes raw
+  blobs via `review-receipt.py materialize` (bound to that worktree's own
+  gitdir/index, rejecting escaping symlinks, and never executing smudge filters),
+  and cleans both the checkout and its registered worktree metadata on exit or
+  signal cancellation.
+- `codex-review-gate.sh` invokes Codex with the detached clean worktree as its
+  working directory, while `antigravity-review-gate.sh` runs Step 3 local
+  compile/lint checks against a second disposable detached worktree of pinned
+  `HEAD` (preserving Git index and `HEAD` metadata for Git-dependent linters and
+  builds while keeping generated build caches like `tsconfig.tsbuildinfo`, lint
+  caches, and `Cargo.lock` out of the captured worktree, and degrading cleanly
+  when `package.json` declares dependencies not materialized in `HEAD`) and runs
+  `agy` inside its materialized jail.
+- `review-receipt.py capture` / `begin` takes `--receipt-repo <caller>`
+  (requiring `--scope committed`, distinct owned worktrees sharing the same
+  `git-common-dir` — including `git init --separate-git-dir` primary checkouts —
+  matching `HEAD`, a clean detached worktree free of escaping symlinks, and
+  recursive live-surface cleanliness across installed skill/rule/script bundles,
+  `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `AGENTS.override.md`, and the selected
+  reviewer executable using POSIX symlink resolution), writing snapshots,
+  attempts, receipts, block markers, retained outputs, and ledger entries into
+  `<caller>`'s git-dir. Completed `--clean-worktree` receipts bind to pure Git
+  objects with `--attr-source` pinned to `HEAD` so `review-receipt.py check`
+  and `githooks/pre-push` succeed after the temporary worktree is removed.
+
 ### Claude script tiers
 
 Each script uses scoped `--allowedTools` to limit what Claude can do:
@@ -448,7 +541,7 @@ If you trust a script to run completely unattended:
 
 ```bash
 # Per-script
-./test-coverage.sh ~/dev/atlas --full-auto
+./test-coverage.sh ~/dev/stringer --full-auto
 
 # Overnight run with full auto
 ./overnight.sh --deep --full-auto
@@ -506,7 +599,7 @@ Environment variables:
 All output goes to `~/.claude/logs/` with filenames like:
 
 ```
-TIER_READONLY_atlas_2026-03-18_2300.log
+TIER_READONLY_beacon_2026-03-18_2300.log
 TIER_FIX_stringer_2026-03-18_2300.log
 ```
 
@@ -517,14 +610,14 @@ TIER_FIX_stringer_2026-03-18_2300.log
 ### Option 1: Environment variable (explicit repos)
 
 ```bash
-export CLAUDE_REPOS="~/dev/atlas ~/dev/stringer ~/dev/smss"
+export CLAUDE_REPOS="~/dev/beacon ~/dev/stringer ~/dev/smss"
 ```
 
 ### Option 2: Config file (explicit repos)
 
 ```bash
 # ~/.claude/repos — one path per line, # comments allowed
-~/dev/atlas
+~/dev/beacon
 ~/dev/stringer
 ~/dev/smss
 # ~/dev/old-project  # commented out, skipped

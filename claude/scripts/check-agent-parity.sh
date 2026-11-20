@@ -22,7 +22,7 @@
 #     byte-identical to what gen-instruction-files.sh produces from
 #     agents/canon/. A hand-edit to a generated file, or a canon edit without
 #     regeneration, fails CI. This is what enforces the root AGENTS.md, the
-#     cloud-agent brief added by ADR-0009: it is deliberately outside check 1,
+#     cloud-agent brief: it is deliberately outside check 1,
 #     because it carries only the rules that survive with no session history
 #     and holding it to every local file's phrase list would defeat that.
 #
@@ -66,6 +66,8 @@ RULES=(
   "read-before-change|read the surrounding code before"
   "verify-changes|way to check the work|verify (meaningful|your) (changes|work)|smallest useful (test|check)"
   "report-unrun-tests|test (you|that) could not (be )?run"
+  "tests-assert-behavior|a test asserts behavior"
+  "real-engine-tests|real engine or parser over .*hand-rolled regex"
   "no-commit-secrets|never (commit|stage) .*(auth|secret|token|credential|\.env)"
   "private-memory-split|claude-memory|codex-memory|agy-memory|private .*(repo|memory)"
   "doc-contract|doc.?contract|check-doc-truth"
@@ -75,6 +77,10 @@ RULES=(
   "handoff-claim-repro|claim to disprove"
   # Two-floor grounding (#219, ADR-0006):
   "two-floor-grounding|two-floor grounding|project floor.*external floor"
+  # CI cost standard (canon block ci-cost):
+  "ci-cost|CI minutes are a budget"
+  # Build standards (canon block build-standards, ADR-0010):
+  "build-standards|build standards hold in every language"
 )
 
 # Markdown wraps rule sentences across lines; join indented continuation

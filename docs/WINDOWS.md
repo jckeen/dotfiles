@@ -181,7 +181,7 @@ Keep that paragraph private; it is a personal preference, not part of this repo.
 Five repos in a split-pane grid, one command:
 
 ```powershell
-ccgrid dotfiles atlas stringer beacon trnn
+ccgrid dotfiles stringer beacon trnn pubroute
 ```
 
 That opens a new Windows Terminal tab with five panes (alternating

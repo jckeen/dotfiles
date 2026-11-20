@@ -6,6 +6,7 @@ No Git worktree diff is used: clean filters can execute even with --no-textconv.
 """
 
 import argparse
+from collections import deque
 import contextlib
 from datetime import datetime, timedelta, timezone
 import difflib
@@ -16,13 +17,31 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import uuid
 
 LANES = ("codex", "antigravity")
+GIT_ROUTING_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_NAMESPACE",
+    "GIT_ATTR_SOURCE",
+    "GIT_CEILING_DIRECTORIES",
+)
 # ADR-0008. `any < antigravity < codex`: a receipt ships a diff when its lane
 # ranks at or above the lane the diff requires. "any" is not a reviewer — it is
 # the requirement a tier-1 exemption places on whichever lane recorded it.
@@ -106,20 +125,54 @@ def quote_git_path(path):
     )
 
 
-def git(repo, *args):
+def _git_env(extra=None):
     env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_NO_REPLACE_OBJECTS="1")
-    # The helper supplies its own literal pathspecs; inherited switches can
-    # suppress their magic, expand their matches, or conflict with each other.
+    # The helper supplies its own literal pathspecs and `-C <repo>` routing;
+    # inherited pathspec switches and Git routing overrides must never divert
+    # index, object, worktree, or attribute lookups.
     for name in (
         "GIT_LITERAL_PATHSPECS",
         "GIT_GLOB_PATHSPECS",
         "GIT_NOGLOB_PATHSPECS",
         "GIT_ICASE_PATHSPECS",
+        *GIT_ROUTING_ENV_VARS,
     ):
         env.pop(name, None)
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _reject_git_routing_overrides():
+    routing_set = set(GIT_ROUTING_ENV_VARS) | {
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+    }
+    found = [
+        name
+        for name in os.environ
+        if name in routing_set or name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    ]
+    if found:
+        raise ValueError(
+            "Git environment overrides are unsupported here; unset: " + ", ".join(sorted(found))
+        )
+
+
+def git(repo, *args, extra_env=None):
     return subprocess.check_output(
-        ["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
-        env=env,
+        [
+            "git",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-C",
+            str(repo),
+            *args,
+        ],
+        env=_git_env(extra_env),
         stderr=subprocess.PIPE,
     )
 
@@ -152,6 +205,17 @@ def own_worktrees(repo):
     }
 
 
+def primary_worktree(repo):
+    """Real path of this repository's non-bare primary worktree, or None."""
+    records = git(repo, "worktree", "list", "--porcelain", "-z").split(b"\0\0")
+    if not records or not records[0]:
+        return None
+    lines = records[0].split(b"\0")
+    if not lines or not lines[0].startswith(b"worktree ") or b"bare" in lines[1:]:
+        return None
+    return os.path.realpath(os.fsdecode(lines[0][len(b"worktree ") :]))
+
+
 def worktree_gitdir(directory):
     """Realpath of the gitdir named by a linked worktree's `.git` pointer file.
 
@@ -160,17 +224,34 @@ def worktree_gitdir(directory):
     stops at that directory all the same — so the caller checks the target against
     this repository's worktree store. None when the pointer is absent, unreadable
     or malformed, which the caller treats as a foreign boundary (#474).
+
+    Parsed as Git's read_gitfile does: the whole file must start with exactly
+    `gitdir: `, and only trailing CR/LF bytes are removed. Any other byte belongs
+    to the path, so stripping whitespace named a different gitdir (#641, the
+    class #541 fixed).
     """
     try:
         pointer = (directory / ".git").read_bytes()
     except OSError:
         return None
-    for line in pointer.splitlines():
-        if line.startswith(b"gitdir:"):
-            return os.path.realpath(
-                os.path.join(directory, os.fsdecode(line[len(b"gitdir:") :].strip()))
-            )
-    return None
+    if not pointer.startswith(b"gitdir: "):
+        return None
+    target = pointer[len(b"gitdir: ") :].rstrip(b"\r\n")
+    if not target:
+        return None
+    return os.path.realpath(os.path.join(directory, os.fsdecode(target)))
+
+
+def registered_worktree(gitdir):
+    """The `.git` path a worktree store entry registers, or None if unreadable.
+
+    Git writes `<path>/.git` plus a newline; only trailing CR/LF bytes are its
+    delimiters, as in its own prune check (#641).
+    """
+    try:
+        return os.fsdecode((Path(gitdir) / "gitdir").read_bytes().rstrip(b"\r\n"))
+    except OSError:
+        return None
 
 
 def boundary_listing(directory):
@@ -196,11 +277,19 @@ def boundary_listing(directory):
     and with no exclude option git applies no patterns at all, so every untracked
     file is listed. Returns None when the directory is not a usable repository,
     which the caller treats as a refusal rather than as an empty listing.
+
+    For the same reason the boundary's own config must not decide WHERE or HOW
+    git looks (#641). `--work-tree` pins the listing to this directory: a
+    `core.worktree` in the boundary's config otherwise lists another directory,
+    and `-c core.worktree=` does not override it (checked on git 2.43).
+    `core.ignoreCase` is forced off so a tracked `claude.md` cannot mask an
+    untracked `CLAUDE.md` on a case-sensitive filesystem.
     """
     entries = []
+    pinned = ("--work-tree", str(directory), "-c", "core.ignoreCase=false")
     try:
-        staged = git(directory, "ls-files", "-z", "--cached", "--stage")
-        others = git(directory, "ls-files", "-z", "--others")
+        staged = git(directory, *pinned, "ls-files", "-z", "--cached", "--stage")
+        others = git(directory, *pinned, "ls-files", "-z", "--others")
     except (subprocess.SubprocessError, OSError):
         return None
     for record in staged.split(b"\0"):
@@ -314,19 +403,21 @@ def instruction(path):
 
 
 def vendored_dependency(repo, path, trees=None):
-    """An ignored path inside an installed dependency tree of a skill or scripts dir.
+    """An ignored path inside an installed dependency tree of a skill, scripts dir or root.
 
     The #439 hook-tree exemption, extended to `claude/skills/<name>/node_modules`
-    and `claude/scripts/node_modules` (#514), and deliberately narrower: a
-    dependency tree is exactly where a planted instruction file would hide, so
-    the exemption holds only where installation is the evident explanation. The
-    caller passes only entries `ls-files --ignored` reported, but that proves only
-    the ENTRY is ignored: excluding one planted `AGENTS.md` by name would pass as
-    a vendored tree. So the `node_modules` directory itself — a real directory,
-    never a symlink — must be ignored too, and the directory that owns it must
-    hold a lockfile, checked on disk as a regular file (never a symlink). Everything else — another
-    layout, no lockfile, a tree that is not ignored — stays an instruction
-    surface and fails closed.
+    and `claude/scripts/node_modules` (#514) and to the repository root's own
+    `node_modules`, which every installed bun/npm project has (#651). It is
+    deliberately narrower: a dependency tree is exactly where a planted
+    instruction file would hide, so the exemption holds only where installation
+    is the evident explanation. The caller passes only entries `ls-files
+    --ignored` reported, but that proves only the ENTRY is ignored: excluding one
+    planted `AGENTS.md` by name would pass as a vendored tree. So the
+    `node_modules` directory itself — a real directory, never a symlink — must be
+    ignored too, and the directory that owns it must hold a lockfile, checked on
+    disk as a regular file (never a symlink). Everything else — another layout
+    (a nested package's `node_modules` included), no lockfile, a tree that is not
+    ignored — stays an instruction surface and fails closed.
 
     `trees` memoizes the per-tree verdict for one capture: every file under a
     qualifying tree would otherwise repeat the same lstat and `check-ignore`
@@ -339,6 +430,9 @@ def vendored_dependency(repo, path, trees=None):
         owner = parts[:3]
     elif parts[:2] == ("claude", "scripts") and len(parts) > 3 and parts[2] == "node_modules":
         owner = parts[:2]
+    elif len(parts) > 1 and parts[0] == "node_modules":
+        # The root itself owns the tree: its lockfile sits beside `node_modules`.
+        owner = ()
     else:
         return False
     if trees is None:
@@ -350,14 +444,18 @@ def vendored_dependency(repo, path, trees=None):
 
 def vendored_tree(repo, owner):
     locked = False
-    for lockfile in ("bun.lock", "package-lock.json"):
+    for lockfile in ("bun.lock", "bun.lockb", "package-lock.json"):
         try:
             locked = locked or stat.S_ISREG((repo / Path(*owner) / lockfile).lstat().st_mode)
         except OSError:
             continue
     if not locked:
         return False
-    tree = Path(*owner, "node_modules")
+    return ignored_directory(repo, Path(*owner, "node_modules"))
+
+
+def ignored_directory(repo, tree):
+    """Whether `tree` is a real directory (not a symlink) that git itself ignores."""
     try:
         if not stat.S_ISDIR((repo / tree).lstat().st_mode):
             return False
@@ -529,11 +627,1123 @@ def receipts_dir(repo):
     return receipts
 
 
-def layout(repo):
-    repo = repo_root(repo)
-    directory = Path(
+def common_dir(repo):
+    return Path(
+        os.fsdecode(
+            git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").removesuffix(b"\n")
+        )
+    ).resolve()
+
+
+def git_dir(repo):
+    return Path(
         os.fsdecode(git(repo, "rev-parse", "--absolute-git-dir").removesuffix(b"\n"))
     ).resolve()
+
+
+def is_clean_worktree(record):
+    if "clean_worktree" not in record:
+        return False
+    if record["clean_worktree"] is True:
+        return True
+    raise ValueError("malformed clean_worktree flag")
+
+
+class _RealFS:
+    """Thin filesystem adapter so containment checks can be tested against virtual case-insensitive views."""
+
+    def lstat(self, path):
+        return os.lstat(path)
+
+    def stat(self, path):
+        return os.stat(path)
+
+    def readlink(self, path):
+        return os.readlink(path)
+
+    def scandir(self, path):
+        return os.scandir(path)
+
+    def realpath(self, path):
+        return os.path.realpath(path)
+
+    def getcwd(self):
+        return os.getcwd()
+
+    def samefile(self, a, b):
+        return os.path.samefile(a, b)
+
+
+_REAL_FS = _RealFS()
+
+
+def _fold_component(seg):
+    return unicodedata.normalize("NFC", seg).casefold()
+
+
+def _fold_path(path_str):
+    return "/".join(_fold_component(seg) for seg in path_str.split("/") if seg)
+
+
+def _same_existing_path(a, b, fs=_REAL_FS):
+    try:
+        return bool(fs.samefile(a, b))
+    except OSError:
+        return False
+
+
+def _dir_identity(path, label, fs=_REAL_FS):
+    try:
+        st = fs.stat(path)
+    except OSError as exc:
+        raise ValueError(f"cannot inspect {label}: {os.fspath(path)}") from exc
+    if not stat.S_ISDIR(st.st_mode):
+        raise ValueError(f"cannot inspect {label}: {os.fspath(path)}")
+    return (st.st_dev, st.st_ino)
+
+
+def _canonical_rel_in_repo(repo_real, rel_parts, fs=_REAL_FS):
+    if not rel_parts:
+        return Path(".")
+    cur = repo_real
+    out = []
+    for idx, seg in enumerate(rel_parts):
+        probe = cur / seg
+        try:
+            target_st = fs.lstat(probe)
+        except (FileNotFoundError, NotADirectoryError):
+            out.extend(rel_parts[idx:])
+            break
+        except OSError as exc:
+            raise ValueError(
+                "cannot inspect live reviewer or gate surface: " + os.fspath(probe)
+            ) from exc
+        target_id = (target_st.st_dev, target_st.st_ino)
+        try:
+            with fs.scandir(cur) as it:
+                dir_entries = list(it)
+        except OSError as exc:
+            raise ValueError(
+                "cannot inspect live reviewer or gate surface: " + os.fspath(cur)
+            ) from exc
+        exact = None
+        folded_match = None
+        inode_match = None
+        seg_folded = _fold_component(seg)
+        for entry in dir_entries:
+            if entry.name == seg:
+                exact = entry.name
+                break
+            try:
+                est = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if (est.st_dev, est.st_ino) == target_id:
+                if _fold_component(entry.name) == seg_folded:
+                    folded_match = entry.name
+                elif inode_match is None:
+                    inode_match = entry.name
+        matched_name = exact or folded_match or inode_match
+        if matched_name is None:
+            raise ValueError(
+                "cannot resolve live reviewer or gate surface alias: " + os.fspath(probe)
+            )
+        out.append(matched_name)
+        cur = cur / matched_name
+    return Path(*out) if out else Path(".")
+
+
+def assert_owned_worktree(candidate, common, worktrees, primary=None, allow_separate_primary=False):
+    store = os.path.realpath(os.path.join(os.path.realpath(common), "worktrees"))
+    try:
+        dotgit_mode = (candidate / ".git").lstat().st_mode
+    except OSError as exc:
+        raise ValueError("worktree is missing .git metadata") from exc
+    if stat.S_ISDIR(dotgit_mode):
+        if not any(
+            _same_existing_path(candidate, wt) for wt in worktrees
+        ) or not _same_existing_path(candidate / ".git", common):
+            raise ValueError("worktree is not owned by the receipt repository")
+        return
+    if not stat.S_ISREG(dotgit_mode):
+        raise ValueError("worktree is not owned by the receipt repository")
+    gitdir = worktree_gitdir(candidate)
+    if gitdir is None:
+        raise ValueError("worktree is not owned by the receipt repository")
+    if _same_existing_path(gitdir, common):
+        if (
+            allow_separate_primary
+            and primary is not None
+            and (_same_existing_path(candidate, primary) or _same_existing_path(primary, common))
+        ):
+            return
+        raise ValueError("worktree is not owned by the receipt repository")
+    if not any(_same_existing_path(candidate, wt) for wt in worktrees) or not _same_existing_path(
+        os.path.dirname(gitdir), store
+    ):
+        raise ValueError("worktree is not owned by the receipt repository")
+    registered = registered_worktree(gitdir)
+    if registered is None or not _same_existing_path(registered, candidate / ".git"):
+        raise ValueError("worktree is not owned by the receipt repository")
+
+
+def verify_clean_worktree_pair(source_repo, receipt_repo):
+    source_root = repo_root(source_repo)
+    receipt_root = repo_root(receipt_repo)
+    if _same_existing_path(source_root, receipt_root):
+        raise ValueError("--receipt-repo must name a different worktree than --repo")
+    source_common = common_dir(source_root)
+    receipt_common = common_dir(receipt_root)
+    if not _same_existing_path(source_common, receipt_common):
+        raise ValueError(
+            "receipt repository does not share a Git common directory with the reviewed worktree"
+        )
+    worktrees = own_worktrees(receipt_root)
+    primary = primary_worktree(receipt_root)
+    assert_owned_worktree(
+        source_root, receipt_common, worktrees, primary=primary, allow_separate_primary=False
+    )
+    assert_owned_worktree(
+        receipt_root, receipt_common, worktrees, primary=primary, allow_separate_primary=True
+    )
+    if oid(source_root, "HEAD") != oid(receipt_root, "HEAD"):
+        raise ValueError("reviewed worktree HEAD does not match receipt repository HEAD")
+    return source_root, receipt_root
+
+
+def parse_index_stage(repo):
+    index = git(repo, "ls-files", "--stage", "-t", "-z")
+    staged, skipped = {}, set()
+    for entry in index.split(b"\0"):
+        if not entry:
+            continue
+        metadata, path_bytes = entry.split(b"\t", 1)
+        tag, mode, obj, stage = metadata.decode().split()
+        path = os.fsdecode(path_bytes)
+        if mode == "160000":
+            raise ValueError("submodule snapshots are unsupported; review separately")
+        if stage != "0":
+            raise ValueError("unmerged index cannot be reviewed")
+        staged[path] = (mode, obj)
+        if tag == "S":
+            skipped.add(path)
+    return index, staged, skipped
+
+
+def _assert_tree_symlinks_confined(entries, blob_lookup):
+    symlink_targets = {
+        path: os.fsdecode(blob_lookup(obj))
+        for path, (mode, obj) in entries.items()
+        if mode == "120000"
+    }
+    if not symlink_targets:
+        return
+    folded_symlinks = {}
+    for path, target in symlink_targets.items():
+        folded_symlinks.setdefault(_fold_path(path), []).append((path, target))
+    for path in sorted(entries):
+        parent = Path(path).parent
+        prefix_parts = list(parent.parts) if parent != Path(".") else []
+        for idx in range(len(prefix_parts)):
+            anc = "/".join(prefix_parts[: idx + 1])
+            if anc in symlink_targets or _fold_path(anc) in folded_symlinks:
+                raise ValueError("escaping symlink ancestor in clean worktree: " + path)
+    for path, target in sorted(symlink_targets.items()):
+        if not target or target.startswith("/") or "\0" in target:
+            raise ValueError("escaping symlink in clean worktree: " + path)
+        parent = Path(path).parent
+        prefix_parts = list(parent.parts) if parent != Path(".") else []
+        work = deque([(list(prefix_parts), deque(_split_components(target)), 1)])
+        expansions = 0
+        while work:
+            resolved, queue, hops = work.popleft()
+            while queue:
+                seg = queue.popleft()
+                if seg == "..":
+                    if not resolved:
+                        raise ValueError("escaping symlink in clean worktree: " + path)
+                    resolved.pop()
+                    continue
+                if _fold_component(seg).rstrip(". ") in (".git", "git~1"):
+                    raise ValueError("symlink targets .git in clean worktree: " + path)
+                resolved.append(seg)
+                matches = folded_symlinks.get(_fold_path("/".join(resolved)))
+                if matches:
+                    next_hops = hops + 1
+                    expansions += len(matches)
+                    if next_hops > 40 or expansions > 256:
+                        raise ValueError("symlink loop in clean worktree: " + path)
+                    base_resolved = resolved[:-1]
+                    rem = list(queue)
+                    for _m_path, next_target in matches:
+                        if not next_target or next_target.startswith("/") or "\0" in next_target:
+                            raise ValueError("escaping symlink in clean worktree: " + path)
+                        new_q = deque(_split_components(next_target))
+                        new_q.extend(rem)
+                        work.append((list(base_resolved), new_q, next_hops))
+                    break
+
+
+def _assert_disk_symlinks_confined(root, symlink_paths, fs=_REAL_FS):
+    if not symlink_paths:
+        return
+    root_real = Path(fs.realpath(root))
+    root_id = _dir_identity(root_real, "clean worktree root", fs=fs)
+    dotgit_id = None
+    try:
+        dotgit_st = fs.lstat(root_real / ".git")
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ValueError("cannot inspect clean worktree .git metadata") from exc
+    else:
+        dotgit_id = (dotgit_st.st_dev, dotgit_st.st_ino)
+
+    def _has_root_ancestor(path_obj):
+        cur = path_obj
+        while True:
+            try:
+                st = fs.lstat(cur)
+            except (FileNotFoundError, NotADirectoryError):
+                pass
+            except OSError as exc:
+                raise ValueError(
+                    "cannot verify symlink in clean worktree: " + os.fspath(path_obj)
+                ) from exc
+            else:
+                if stat.S_ISDIR(st.st_mode) and (st.st_dev, st.st_ino) == root_id:
+                    return True
+            parent = cur.parent
+            if parent == cur:
+                return False
+            cur = parent
+
+    root_parts = _split_components(os.fspath(root_real))
+    root_depth = len(root_parts)
+    for rel_path in sorted(symlink_paths):
+        resolved = list(root_parts)
+        queue = deque(_split_components(rel_path))
+        hops = 0
+        last_is_dir = True
+        while queue:
+            seg = queue.popleft()
+            if seg == "..":
+                if not last_is_dir or len(resolved) <= root_depth:
+                    raise ValueError("escaping symlink in clean worktree: " + rel_path)
+                resolved.pop()
+                last_is_dir = True
+                continue
+            if _fold_component(seg).rstrip(". ") in (".git", "git~1"):
+                raise ValueError("symlink targets .git in clean worktree: " + rel_path)
+            resolved.append(seg)
+            acc = Path("/", *resolved)
+            try:
+                st = fs.lstat(acc)
+            except (FileNotFoundError, NotADirectoryError):
+                depth = len(resolved)
+                for rem_seg in queue:
+                    if rem_seg == "..":
+                        depth -= 1
+                        if depth < root_depth:
+                            raise ValueError(
+                                "escaping symlink in clean worktree: " + rel_path
+                            ) from None
+                        continue
+                    if _fold_component(rem_seg).rstrip(". ") in (".git", "git~1"):
+                        raise ValueError(
+                            "symlink targets .git in clean worktree: " + rel_path
+                        ) from None
+                    depth += 1
+                break
+            except OSError as exc:
+                raise ValueError("cannot verify symlink in clean worktree: " + rel_path) from exc
+            if dotgit_id is not None and (st.st_dev, st.st_ino) == dotgit_id:
+                raise ValueError("symlink targets .git in clean worktree: " + rel_path)
+            if stat.S_ISLNK(st.st_mode):
+                hops += 1
+                if hops > 40:
+                    raise ValueError("symlink loop in clean worktree: " + rel_path)
+                try:
+                    target = fs.readlink(acc)
+                except OSError as exc:
+                    raise ValueError(
+                        "cannot verify symlink in clean worktree: " + rel_path
+                    ) from exc
+                if not target or os.path.isabs(target) or "\0" in target:
+                    raise ValueError("escaping symlink in clean worktree: " + rel_path)
+                resolved.pop()
+                if len(resolved) < root_depth:
+                    raise ValueError("escaping symlink in clean worktree: " + rel_path)
+                last_is_dir = True
+                for target_seg in reversed(_split_components(target)):
+                    queue.appendleft(target_seg)
+            else:
+                last_is_dir = stat.S_ISDIR(st.st_mode)
+        if not _has_root_ancestor(Path("/", *resolved)):
+            raise ValueError("escaping symlink in clean worktree: " + rel_path)
+        try:
+            phys_final = Path(fs.realpath(root_real / rel_path))
+        except OSError as exc:
+            raise ValueError("cannot verify symlink in clean worktree: " + rel_path) from exc
+        if not _has_root_ancestor(phys_final):
+            raise ValueError("escaping symlink in clean worktree: " + rel_path)
+        if dotgit_id is not None:
+            try:
+                fin_st = fs.lstat(phys_final)
+            except (FileNotFoundError, NotADirectoryError):
+                pass
+            except OSError as exc:
+                raise ValueError("cannot verify symlink in clean worktree: " + rel_path) from exc
+            else:
+                if (fin_st.st_dev, fin_st.st_ino) == dotgit_id:
+                    raise ValueError("symlink targets .git in clean worktree: " + rel_path)
+
+
+def assert_worktree_clean(repo):
+    if (
+        git(
+            repo,
+            "--work-tree",
+            str(repo),
+            "-c",
+            "core.ignoreCase=false",
+            "ls-files",
+            "--others",
+            "-z",
+        )
+        != b""
+    ):
+        raise ValueError("clean worktree has untracked or ignored files")
+    _, staged, skipped = parse_index_stage(repo)
+    if skipped:
+        raise ValueError("sparse checkout cannot be used as a clean worktree")
+    head = oid(repo, "HEAD")
+    entries = tree_files(repo, head)
+    if staged != entries:
+        raise ValueError("clean worktree index differs from HEAD")
+    file_mode = (
+        git(repo, "config", "--type=bool", "--default", "true", "--get", "core.fileMode").strip()
+        == b"true"
+    )
+    crlf_paths = None
+    blobs = {}
+    for path, (orig_mode, obj) in entries.items():
+        mode, content = file_bytes(repo, path, True)
+        if modes_differ(mode, orig_mode, file_mode):
+            raise ValueError("clean worktree differs from HEAD: " + path)
+        if b"\r\n" in content and crlf_paths is None:
+            crlf_paths = crlf_normalized_paths(repo)
+        if obj not in blobs:
+            blobs[obj] = git(repo, "cat-file", "blob", obj)
+        if not same_content(path, mode, blobs[obj], content, crlf_paths or set()):
+            raise ValueError("clean worktree differs from HEAD: " + path)
+    _assert_tree_symlinks_confined(entries, lambda obj: blobs[obj])
+    _assert_disk_symlinks_confined(
+        repo, [path for path, (mode, _) in entries.items() if mode == "120000"]
+    )
+
+
+def _split_components(path_str):
+    return [part for part in path_str.split("/") if part and part != "."]
+
+
+def _paths_within_repo(candidate, repo, fs=_REAL_FS):
+    raw = os.fspath(candidate)
+    repo_real = Path(fs.realpath(repo))
+    repo_id = _dir_identity(repo_real, "receipt repository", fs=fs)
+
+    def _find_repo_depth(parts):
+        for idx in range(len(parts) + 1):
+            cur = Path("/", *parts[:idx])
+            try:
+                st = fs.lstat(cur)
+            except (FileNotFoundError, NotADirectoryError):
+                return None
+            except OSError as exc:
+                raise ValueError("cannot inspect live reviewer or gate surface: " + raw) from exc
+            if stat.S_ISDIR(st.st_mode) and (st.st_dev, st.st_ino) == repo_id:
+                return idx
+        return None
+
+    if os.path.isabs(raw):
+        resolved = []
+    else:
+        resolved = _split_components(fs.realpath(fs.getcwd()))
+    repo_depth = _find_repo_depth(resolved)
+    queue = deque(_split_components(raw))
+    found = []
+    entered_repo_via_symlink = False
+    symlink_hops = 0
+    last_is_dir = True
+    while queue:
+        part = queue.popleft()
+        if part == "..":
+            if not last_is_dir:
+                if repo_depth is not None and len(resolved) > repo_depth:
+                    rel = _canonical_rel_in_repo(repo_real, resolved[repo_depth:], fs=fs)
+                    if rel not in found:
+                        found.append(rel)
+                elif entered_repo_via_symlink and repo_depth is None:
+                    raise ValueError(
+                        "dirty live reviewer or gate surface escapes receipt repository via symlink: "
+                        + raw
+                    )
+                return found
+            if resolved:
+                resolved.pop()
+                if repo_depth is not None and len(resolved) < repo_depth:
+                    repo_depth = None
+            last_is_dir = True
+            continue
+        resolved.append(part)
+        acc = Path("/", *resolved)
+        try:
+            st = fs.lstat(acc)
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            if repo_depth is not None:
+                rel = (
+                    _canonical_rel_in_repo(repo_real, resolved[repo_depth:], fs=fs)
+                    if len(resolved) > repo_depth
+                    else Path(".")
+                )
+                if rel not in found:
+                    found.append(rel)
+                return found
+            if entered_repo_via_symlink:
+                raise ValueError(
+                    "dirty live reviewer or gate surface escapes receipt repository via symlink: "
+                    + raw
+                ) from exc
+            return found
+        except OSError as exc:
+            raise ValueError("cannot inspect live reviewer or gate surface: " + raw) from exc
+        is_link = stat.S_ISLNK(st.st_mode)
+        if not is_link and stat.S_ISDIR(st.st_mode) and (st.st_dev, st.st_ino) == repo_id:
+            if repo_depth is None:
+                repo_depth = len(resolved)
+        if repo_depth is not None and len(resolved) > repo_depth:
+            if is_link:
+                entered_repo_via_symlink = True
+                rel = _canonical_rel_in_repo(repo_real, resolved[repo_depth:], fs=fs)
+                if rel not in found:
+                    found.append(rel)
+            elif not queue:
+                rel = _canonical_rel_in_repo(repo_real, resolved[repo_depth:], fs=fs)
+                if rel not in found:
+                    found.append(rel)
+        if is_link:
+            symlink_hops += 1
+            if symlink_hops > 40:
+                raise ValueError("symlink loop in live reviewer or gate surface: " + raw)
+            try:
+                target = fs.readlink(acc)
+            except OSError as exc:
+                raise ValueError("cannot inspect live reviewer or gate surface: " + raw) from exc
+            target_parts = _split_components(target)
+            if os.path.isabs(target):
+                resolved = []
+                repo_depth = _find_repo_depth(resolved)
+            else:
+                resolved.pop()
+                if repo_depth is not None and len(resolved) < repo_depth:
+                    repo_depth = None
+            last_is_dir = True
+            for target_part in reversed(target_parts):
+                queue.appendleft(target_part)
+        else:
+            last_is_dir = stat.S_ISDIR(st.st_mode)
+    if repo_depth is not None:
+        if len(resolved) == repo_depth:
+            if Path(".") not in found:
+                found.append(Path("."))
+        else:
+            rel = _canonical_rel_in_repo(repo_real, resolved[repo_depth:], fs=fs)
+            if rel not in found:
+                found.append(rel)
+    elif entered_repo_via_symlink:
+        raise ValueError(
+            "dirty live reviewer or gate surface escapes receipt repository via symlink: " + raw
+        )
+    return found
+
+
+def _env_path_preserving_traversal(name, fs=_REAL_FS):
+    value = os.environ.get(name)
+    if not value:
+        return None
+    if os.path.isabs(value):
+        return Path(value)
+    return Path(os.path.join(fs.realpath(fs.getcwd()), value))
+
+
+def _live_runtime_roots(fs=_REAL_FS):
+    codex_homes = []
+    claude_homes = []
+    seen_codex = set()
+    seen_claude = set()
+    codex_env = _env_path_preserving_traversal("CODEX_HOME", fs=fs)
+    if codex_env is not None:
+        codex_homes.append(codex_env)
+        seen_codex.add(os.fspath(codex_env))
+    claude_env = _env_path_preserving_traversal("CLAUDE_CONFIG_DIR", fs=fs)
+    if claude_env is not None:
+        claude_homes.append(claude_env)
+        seen_claude.add(os.fspath(claude_env))
+    home = _env_path_preserving_traversal("HOME", fs=fs)
+    if home is not None:
+        default_codex = home / ".codex"
+        if os.fspath(default_codex) not in seen_codex:
+            codex_homes.append(default_codex)
+        default_claude = home / ".claude"
+        if os.fspath(default_claude) not in seen_claude:
+            claude_homes.append(default_claude)
+    roots = []
+    for ch in codex_homes:
+        roots.extend(
+            (
+                ch / "AGENTS.override.md",
+                ch / "AGENTS.md",
+                ch / "AGENTS.local.md",
+                ch / "instructions.md",
+                ch / "config.toml",
+                ch / "skills",
+                ch / "rules",
+                ch / "packages/standalone/current/bin/codex",
+                ch / "packages/standalone/current/codex",
+            )
+        )
+    if home is not None:
+        roots.extend(
+            (
+                home / ".agents/AGENTS.override.md",
+                home / ".agents/AGENTS.md",
+                home / ".agents/skills",
+                home / ".gemini/GEMINI.md",
+                home / ".gemini/config/GEMINI.md",
+                home / ".gemini/config/GEMINI.local.md",
+                home / ".gemini/config/skills",
+                home / ".gemini/antigravity-cli/settings.json",
+            )
+        )
+    for clh in claude_homes:
+        roots.extend(
+            (
+                clh / "CLAUDE.md",
+                clh / "CLAUDE.local.md",
+                clh / "settings.json",
+                clh / "settings.local.json",
+                clh / "scripts",
+                clh / "skills",
+                clh / "agents",
+                clh / "hooks",
+            )
+        )
+    return roots, codex_homes, claude_homes
+
+
+def _is_vendored_path(receipt_repo, rel_str, vendored_trees):
+    if not rel_str or rel_str == ".":
+        return False
+    return vendored_dependency(receipt_repo, rel_str, vendored_trees) or vendored_dependency(
+        receipt_repo, rel_str + "/_", vendored_trees
+    )
+
+
+def _record_live_rel(rel_paths, rel_allow_vendored, rel, allow_vendored):
+    key = rel.as_posix()
+    if key not in rel_allow_vendored:
+        rel_allow_vendored[key] = allow_vendored
+        rel_paths.append(rel)
+    elif not allow_vendored:
+        rel_allow_vendored[key] = False
+
+
+def _walk_live_root(root, receipt_repo, rel_paths, rel_allow_vendored, vendored_trees, fs=_REAL_FS):
+    def record(path, is_dir_target=False):
+        rels = _paths_within_repo(path, receipt_repo, fs=fs)
+        for rel in rels:
+            allow_vendored = is_dir_target and not _is_vendored_path(
+                receipt_repo, rel.as_posix(), vendored_trees
+            )
+            _record_live_rel(rel_paths, rel_allow_vendored, rel, allow_vendored)
+        return rels
+
+    try:
+        root_lstat = fs.lstat(root)
+        root_st = fs.stat(root) if stat.S_ISLNK(root_lstat.st_mode) else root_lstat
+    except (FileNotFoundError, NotADirectoryError):
+        record(root, is_dir_target=False)
+        return
+    except OSError as exc:
+        raise ValueError(
+            "cannot inspect live reviewer or gate surface: " + os.fspath(root)
+        ) from exc
+    root_is_dir = stat.S_ISDIR(root_st.st_mode)
+    root_rels = record(root, is_dir_target=root_is_dir)
+    if not root_is_dir:
+        return
+    repo_id = _dir_identity(Path(fs.realpath(receipt_repo)), "receipt repository", fs=fs)
+    if (root_st.st_dev, root_st.st_ino) == repo_id:
+        return
+    root_covered = bool(root_rels) and all(
+        not _is_vendored_path(receipt_repo, rel.as_posix(), vendored_trees) for rel in root_rels
+    )
+    visited_dirs = {(root_st.st_dev, root_st.st_ino)}
+    stack = [(root, root_covered)]
+    while stack:
+        current, covered_by_repo_dir = stack.pop()
+        try:
+            with fs.scandir(current) as it:
+                entries = sorted(it, key=lambda entry: entry.name)
+        except OSError as exc:
+            raise ValueError(
+                "cannot traverse live reviewer or gate surface: " + os.fspath(current)
+            ) from exc
+        for entry in entries:
+            child = Path(entry.path)
+            try:
+                child_lstat = fs.lstat(child)
+            except (FileNotFoundError, NotADirectoryError):
+                if not covered_by_repo_dir:
+                    record(child, is_dir_target=False)
+                continue
+            except OSError as exc:
+                raise ValueError(
+                    "cannot inspect live reviewer or gate surface: " + os.fspath(child)
+                ) from exc
+            if stat.S_ISLNK(child_lstat.st_mode):
+                try:
+                    child_st = fs.stat(child)
+                except (FileNotFoundError, NotADirectoryError):
+                    record(child, is_dir_target=False)
+                    continue
+                except OSError as exc:
+                    raise ValueError(
+                        "cannot inspect live reviewer or gate surface: " + os.fspath(child)
+                    ) from exc
+                child_is_dir = stat.S_ISDIR(child_st.st_mode)
+                child_rels = record(child, is_dir_target=child_is_dir)
+                if child_is_dir:
+                    dir_id = (child_st.st_dev, child_st.st_ino)
+                    if dir_id == repo_id or dir_id in visited_dirs:
+                        continue
+                    visited_dirs.add(dir_id)
+                    child_covered = bool(child_rels) and all(
+                        not _is_vendored_path(receipt_repo, rel.as_posix(), vendored_trees)
+                        for rel in child_rels
+                    )
+                    stack.append((child, child_covered))
+                continue
+            child_is_dir = stat.S_ISDIR(child_lstat.st_mode)
+            if covered_by_repo_dir:
+                if not child_is_dir:
+                    continue
+                dir_id = (child_lstat.st_dev, child_lstat.st_ino)
+                if dir_id == repo_id or dir_id in visited_dirs:
+                    continue
+                if _fold_component(entry.name) == "node_modules" and any(
+                    _is_vendored_path(receipt_repo, rel.as_posix(), vendored_trees)
+                    for rel in _paths_within_repo(child, receipt_repo, fs=fs)
+                ):
+                    continue
+                visited_dirs.add(dir_id)
+                stack.append((child, True))
+                continue
+            child_rels = record(child, is_dir_target=child_is_dir)
+            if child_is_dir:
+                dir_id = (child_lstat.st_dev, child_lstat.st_ino)
+                if dir_id == repo_id or dir_id in visited_dirs:
+                    continue
+                visited_dirs.add(dir_id)
+                child_covered = bool(child_rels) and all(
+                    not _is_vendored_path(receipt_repo, rel.as_posix(), vendored_trees)
+                    for rel in child_rels
+                )
+                stack.append((child, child_covered))
+
+
+def _executable_candidates(executable, launcher=None, reviewer=None, fs=_REAL_FS):
+    candidates = []
+    seen = set()
+    values = []
+    if executable:
+        values.append(executable)
+    if launcher:
+        values.append(launcher)
+    if reviewer in (None, "codex"):
+        codex_bin = os.environ.get("CODEX_GATE_BIN")
+        if codex_bin:
+            values.append(codex_bin)
+        elif not launcher:
+            values.append("codex")
+    elif reviewer == "antigravity" and not launcher:
+        values.append("agy")
+    for raw_val in values:
+        if "/" in raw_val or (os.sep != "/" and os.sep in raw_val):
+            cand = (
+                Path(raw_val)
+                if os.path.isabs(raw_val)
+                else Path(os.path.join(fs.realpath(fs.getcwd()), raw_val))
+            )
+        else:
+            found = shutil.which(raw_val)
+            if not found:
+                continue
+            cand = Path(found)
+        key = os.fspath(cand)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(cand)
+    return candidates
+
+
+def assert_live_runtime_clean(
+    receipt_repo, executable=None, launcher=None, reviewer=None, fs=_REAL_FS
+):
+    rel_paths = []
+    rel_allow_vendored = {}
+    vendored_trees = {}
+    fixed_candidates = [Path(__file__)]
+    fixed_candidates.extend(
+        _executable_candidates(executable, launcher=launcher, reviewer=reviewer, fs=fs)
+    )
+    for base_candidate in fixed_candidates:
+        for rel in _paths_within_repo(base_candidate, receipt_repo, fs=fs):
+            _record_live_rel(rel_paths, rel_allow_vendored, rel, allow_vendored=False)
+    seen_walked_roots = set()
+    helper_dirs = [Path(__file__).parent]
+    real_helper_dir = Path(fs.realpath(__file__)).parent
+    if not _same_existing_path(real_helper_dir, helper_dirs[0], fs=fs):
+        helper_dirs.append(real_helper_dir)
+    for helper_dir in helper_dirs:
+        raw_helper_dir = os.fspath(helper_dir)
+        if raw_helper_dir not in seen_walked_roots:
+            seen_walked_roots.add(raw_helper_dir)
+            _walk_live_root(
+                helper_dir, receipt_repo, rel_paths, rel_allow_vendored, vendored_trees, fs=fs
+            )
+    roots, codex_roots, claude_roots = _live_runtime_roots(fs=fs)
+    for ch in codex_roots + claude_roots:
+        for rel in _paths_within_repo(ch, receipt_repo, fs=fs):
+            if rel != Path("."):
+                raw_ch = os.fspath(ch)
+                if raw_ch not in seen_walked_roots:
+                    seen_walked_roots.add(raw_ch)
+                    _walk_live_root(
+                        ch, receipt_repo, rel_paths, rel_allow_vendored, vendored_trees, fs=fs
+                    )
+                break
+    for root in roots:
+        raw_root = os.fspath(root)
+        if raw_root not in seen_walked_roots:
+            seen_walked_roots.add(raw_root)
+            _walk_live_root(
+                root, receipt_repo, rel_paths, rel_allow_vendored, vendored_trees, fs=fs
+            )
+    if not rel_paths:
+        return
+    head = oid(receipt_repo, "HEAD")
+    head_entries = tree_files(receipt_repo, head)
+    _, staged, skipped = parse_index_stage(receipt_repo)
+    file_mode = (
+        git(
+            receipt_repo,
+            "config",
+            "--type=bool",
+            "--default",
+            "true",
+            "--get",
+            "core.fileMode",
+        ).strip()
+        == b"true"
+    )
+    crlf_paths = None
+    blobs = {}
+    all_tracked = set(head_entries) | set(staged)
+    pinned = ("--work-tree", str(receipt_repo), "-c", "core.ignoreCase=false")
+
+    def _fold_alias_matches(a_rel, b_rel, label):
+        def _lstat_rel(rel_p):
+            try:
+                return fs.lstat(receipt_repo / rel_p)
+            except (FileNotFoundError, NotADirectoryError):
+                return None
+            except OSError as exc:
+                raise ValueError("cannot inspect live reviewer or gate surface: " + label) from exc
+
+        st_a = _lstat_rel(a_rel)
+        st_b = _lstat_rel(b_rel)
+        if st_a is not None and st_b is not None:
+            return (st_a.st_dev, st_a.st_ino) == (st_b.st_dev, st_b.st_ino)
+        return st_a is None and st_b is None
+
+    for rel in rel_paths:
+        rel_str = rel.as_posix()
+        allow_vendored = rel_allow_vendored[rel_str]
+        if not rel.parts:
+            matching = set(all_tracked)
+            others_args = (*pinned, "ls-files", "--others", "-z")
+        else:
+            matching = {
+                p
+                for p in all_tracked
+                if p == rel_str or p.startswith(rel_str + "/") or rel_str.startswith(p + "/")
+            }
+            rel_fold = _fold_path(rel_str)
+            rel_parts = rel.parts
+            for p in all_tracked:
+                if p in matching:
+                    continue
+                p_fold = _fold_path(p)
+                if p_fold == rel_fold:
+                    if _fold_alias_matches(rel_str, p, rel_str):
+                        matching.add(p)
+                elif p_fold.startswith(rel_fold + "/"):
+                    if _fold_alias_matches(
+                        rel_str, "/".join(p.split("/")[: len(rel_parts)]), rel_str
+                    ):
+                        matching.add(p)
+                elif rel_fold.startswith(p_fold + "/"):
+                    p_parts = p.split("/")
+                    if _fold_alias_matches("/".join(rel_parts[: len(p_parts)]), p, rel_str):
+                        matching.add(p)
+
+            for idx in range(1, len(rel_parts) + 1):
+                prefix_str = "/".join(rel_parts[:idx])
+                try:
+                    fs.lstat(receipt_repo / prefix_str / ".git")
+                except (FileNotFoundError, NotADirectoryError):
+                    pass
+                except OSError as exc:
+                    raise ValueError(
+                        "cannot inspect live reviewer or gate surface: " + rel_str
+                    ) from exc
+                else:
+                    if not (
+                        allow_vendored
+                        and vendored_dependency(receipt_repo, rel_str, vendored_trees)
+                    ):
+                        raise ValueError(
+                            "dirty live reviewer or gate surface in receipt repository: " + rel_str
+                        )
+
+            try:
+                rel_st = fs.lstat(receipt_repo / rel_str)
+            except (FileNotFoundError, NotADirectoryError):
+                rel_st = None
+            except OSError as exc:
+                raise ValueError(
+                    "cannot inspect live reviewer or gate surface: " + rel_str
+                ) from exc
+            if (
+                rel_st is not None
+                and not stat.S_ISDIR(rel_st.st_mode)
+                and not matching
+                and not (
+                    allow_vendored and vendored_dependency(receipt_repo, rel_str, vendored_trees)
+                )
+            ):
+                raise ValueError(
+                    "dirty live reviewer or gate surface in receipt repository: " + rel_str
+                )
+
+            others_args = (*pinned, "ls-files", "--others", "-z", "--", ":(literal)" + rel_str)
+        for raw in git(receipt_repo, *others_args).split(b"\0"):
+            if not raw:
+                continue
+            other = os.fsdecode(raw)
+            if not (allow_vendored and vendored_dependency(receipt_repo, other, vendored_trees)):
+                raise ValueError(
+                    "dirty live reviewer or gate surface in receipt repository: " + other
+                )
+        for path in sorted(matching):
+            if path in skipped or staged.get(path) != head_entries.get(path):
+                raise ValueError(
+                    "dirty live reviewer or gate surface in receipt repository: " + path
+                )
+            orig_mode, obj = head_entries[path]
+            mode, content = file_bytes(receipt_repo, path, True)
+            if modes_differ(mode, orig_mode, file_mode):
+                raise ValueError(
+                    "dirty live reviewer or gate surface in receipt repository: " + path
+                )
+            if b"\r\n" in content and crlf_paths is None:
+                crlf_paths = crlf_normalized_paths(receipt_repo)
+            if obj not in blobs:
+                blobs[obj] = git(receipt_repo, "cat-file", "blob", obj)
+            if not same_content(path, mode, blobs[obj], content, crlf_paths or set()):
+                raise ValueError(
+                    "dirty live reviewer or gate surface in receipt repository: " + path
+                )
+
+
+def committed_instruction_links(entries, base_entries, blob):
+    bindings = {}
+    dir_prefixes = set()
+    symlink_paths = set()
+    for path, (mode, _) in entries.items():
+        if mode == "120000":
+            symlink_paths.add(path)
+        parent = Path(path).parent
+        while parent != Path("."):
+            dir_prefixes.add(parent.as_posix())
+            parent = parent.parent
+    links = {path for path, (mode, _) in entries.items() if mode == "120000" and instruction(path)}
+    for path in sorted(links):
+
+        def unsupported(reason, path=path):
+            raise ValueError("unsupported instruction symlink: " + path + " (" + reason + ")")
+
+        if entries.get(path) != base_entries.get(path):
+            unsupported("changed link needs separate instruction review")
+        _, obj = entries[path]
+        content = blob(obj)
+        link_text = os.fsdecode(content)
+        if (
+            not link_text
+            or link_text.startswith("/")
+            or link_text.endswith("/")
+            or "\0" in link_text
+        ):
+            unsupported("target must be relative and stay within the repository")
+        raw_parts = link_text.split("/")
+        if "" in raw_parts or raw_parts[-1] == ".":
+            unsupported("target must resolve to the captured instruction file")
+        parts = list(Path(path).parent.parts)
+        for segment in raw_parts:
+            if parts:
+                prefix = "/".join(parts)
+                if prefix in symlink_paths:
+                    unsupported("target must not traverse a symlink ancestor")
+                if prefix not in dir_prefixes:
+                    unsupported("target must resolve through existing directories")
+            if segment == ".":
+                continue
+            if segment == "..":
+                if not parts:
+                    unsupported("target must stay within the repository")
+                parts.pop()
+            else:
+                parts.append(segment)
+        if not parts:
+            unsupported("target must be a recognized instruction file")
+        target = "/".join(parts)
+        if not instruction(target) or private_agent_data(target):
+            unsupported("target must be a recognized instruction file")
+        target_mode, target_obj = entries.get(target, ("missing", None))
+        if target_mode not in ("100644", "100755"):
+            unsupported("target must be a regular instruction file in HEAD and index")
+        if entries.get(target) != base_entries.get(target):
+            unsupported("changed target needs separate instruction review")
+        bindings[path] = {
+            "target": target,
+            "link_object": obj,
+            "link_sha256": digest(content),
+            "target_object": target_obj,
+            "target_mode": target_mode,
+            "target_sha256": digest(blob(target_obj)),
+        }
+    return bindings
+
+
+def capture_committed_objects(repo, base, base_commit=None):
+    head = oid(repo, "HEAD")
+    if base_commit is None:
+        if not base:
+            raise ValueError("base could not be resolved")
+        base_commit = oid(repo, base)
+    else:
+        base_commit = oid(repo, base_commit)
+    merge = git(repo, "merge-base", base_commit, head).decode().strip()
+    tree = git(repo, "rev-parse", head + "^{tree}").decode().strip()
+    entries = tree_files(repo, head)
+    base_entries = tree_files(repo, merge)
+    diff_args = (
+        "--attr-source=" + head,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--no-color",
+        "--ignore-submodules=none",
+    )
+    paths = [
+        os.fsdecode(p)
+        for p in git(repo, *diff_args, "--name-only", "-z", merge, head, "--").split(b"\0")
+        if p
+    ]
+    private_inputs = [path for path in set(entries) | set(paths) if private_agent_data(path)]
+    if private_inputs:
+        raise ValueError(
+            "private agent runtime data cannot be sent for review: "
+            + ", ".join(sorted(private_inputs))
+        )
+    blobs = {}
+
+    def blob(obj):
+        if obj is None:
+            return b""
+        if obj not in blobs:
+            blobs[obj] = git(repo, "cat-file", "blob", obj)
+        return blobs[obj]
+
+    links = committed_instruction_links(entries, base_entries, blob)
+    changed_modes = {
+        path: [
+            base_entries.get(path, ("missing", None))[0],
+            entries.get(path, ("missing", None))[0],
+        ]
+        for path in paths
+    }
+    full = git(repo, *diff_args, "--binary", merge, head, "--")
+    review_paths = [path for path in paths if not excluded(path, changed_modes[path])]
+    patch = (
+        git(
+            repo,
+            *diff_args,
+            "--text",
+            merge,
+            head,
+            "--",
+            *(":(literal)" + path for path in review_paths),
+        )
+        if review_paths
+        else b""
+    )
+    if b"\0" in patch:
+        raise ValueError("binary content cannot be delivered in a fenced text review")
+    patch.decode("utf-8")
+    artifact = {
+        "head": head,
+        "tree": tree,
+        "base": {"ref": base, "commit": base_commit, "merge_base": merge},
+        "scope": "committed",
+        "diff_sha256": digest(full),
+        "review_diff_sha256": digest(patch),
+        "changed_paths": paths,
+        "changed_modes": changed_modes,
+        "instruction_links": links,
+    }
+    return artifact, patch
+
+
+def stable_committed_objects(repo, base, base_commit=None):
+    if base_commit is None:
+        if not base:
+            raise ValueError("base could not be resolved")
+        base_commit = oid(repo, base)
+    else:
+        base_commit = oid(repo, base_commit)
+    first, patch = capture_committed_objects(repo, base, base_commit)
+    second, patch2 = capture_committed_objects(repo, base, base_commit)
+    if first != second or patch != patch2:
+        raise ValueError("repository changed during review snapshot")
+    return first, patch
+
+
+def layout(repo):
+    repo = repo_root(repo)
+    directory = git_dir(repo)
     receipts = receipts_dir(repo)
     receipts.mkdir(mode=0o700, exist_ok=True)
     os.chmod(receipts, 0o700)
@@ -673,9 +1883,10 @@ def instruction_links(
     return bindings
 
 
-def capture(repo, base, scope):
+def capture(repo, base, scope, base_commit=None):
     head = oid(repo, "HEAD")
-    base_commit = oid(repo, base) if base else None
+    if base_commit is None and base:
+        base_commit = oid(repo, base)
     if scope == "committed" and base_commit is None:
         raise ValueError("base could not be resolved")
     merge = (
@@ -753,22 +1964,22 @@ def capture(repo, base, scope):
         gitdir = worktree_gitdir(directory)
         if gitdir is None or os.path.dirname(gitdir) != store:
             return False
-        try:
-            registered = (Path(gitdir) / "gitdir").read_bytes()
-        except OSError:
+        registered = registered_worktree(gitdir)
+        if registered is None:
             return False
-        return os.path.realpath(os.fsdecode(registered.strip())) == os.path.realpath(
-            directory / ".git"
-        )
+        return os.path.realpath(registered) == os.path.realpath(directory / ".git")
 
     untracked = {
         os.fsdecode(p)
-        for p in git(repo, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
+        for p in git(
+            repo, "-c", "core.ignoreCase=false", "ls-files", "--others", "--exclude-standard", "-z"
+        ).split(b"\0")
         if p and not own_boundary(os.fsdecode(p))
     }
     paths = []
     if scope == "committed":
         args = (
+            "--attr-source=" + head,
             "diff",
             "--no-ext-diff",
             "--no-textconv",
@@ -834,9 +2045,16 @@ def capture(repo, base, scope):
 
     ignored_instructions = set()
     vendored_trees = {}
-    for raw in git(repo, "ls-files", "--others", "--ignored", "--exclude-standard", "-z").split(
-        b"\0"
-    ):
+    for raw in git(
+        repo,
+        "-c",
+        "core.ignoreCase=false",
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "-z",
+    ).split(b"\0"):
         if not raw:
             continue
         entry = os.fsdecode(raw)
@@ -993,9 +2211,19 @@ def capture(repo, base, scope):
     return artifact, patch
 
 
-def stable_capture(repo, base, scope):
-    first, patch = capture(repo, base, scope)
-    second, patch2 = capture(repo, base, scope)
+def stable_capture(repo, base, scope, base_commit=None):
+    """Two identical captures of the artifact against ONE resolved base commit.
+
+    The base ref is resolved once, here, or taken pinned from the snapshot being
+    verified. `origin/main` is shared by every worktree, so a sibling's fetch
+    moving it mid-run used to look like this branch changing and voided a whole
+    review (#680). The branch's own HEAD, tree, index and files still have to
+    match exactly; only the base tip is no longer re-read.
+    """
+    if base_commit is None and base:
+        base_commit = oid(repo, base)
+    first, patch = capture(repo, base, scope, base_commit)
+    second, patch2 = capture(repo, base, scope, base_commit)
     if first != second or patch != patch2:
         raise ValueError("repository changed during review snapshot")
     return first, patch
@@ -1020,13 +2248,15 @@ def read_json(path):
     return json.loads(path.read_bytes())
 
 
-def invalidate(receipts, lane, sequence=None):
+def invalidate(receipts, lane, sequence=None, clean_worktree=False):
     attempt = uuid.uuid4().hex
     marker = {"attempt": attempt}
     if sequence is not None:
         # Bound to the attempt, so a receipt whose captured_sequence was edited
         # no longer matches its live attempt (#573).
         marker["sequence"] = sequence
+    if clean_worktree:
+        marker["clean_worktree"] = True
     atomic_json(receipts / (lane + ".attempt.json"), marker)
     (receipts / (lane + ".json")).unlink(missing_ok=True)
     return attempt
@@ -1043,7 +2273,7 @@ def attempt_lock(receipts):
     attempt and receipt state runs inside this lock, so no run ever observes a
     half-finished transition.
 
-    flock, not a lock directory, for the reason jules-dispatch.sh gives: the
+    flock, not a lock directory: the
     kernel releases it when the holder dies, so a killed or cancelled gate cannot
     wedge the next one. Acquired only by the outermost callers (`capture`,
     `claim`, `complete`, `check`'s final assertion, the `invalidate` subcommand)
@@ -1113,14 +2343,21 @@ def supersede(receipts, record):
     claimed = {"attempt": record["attempt"], "claimed": True}
     if "captured_sequence" in record:
         claimed["sequence"] = record["captured_sequence"]
+    if is_clean_worktree(record):
+        claimed["clean_worktree"] = True
     atomic_json(receipts / (lane + ".attempt.json"), claimed)
 
 
 def assert_attempt(record, claimed=False):
     _, _, receipts = layout(record["repository"])
     marker = read_json(receipts / (record["reviewer"]["name"] + ".attempt.json"))
-    if marker["attempt"] != record["attempt"] or marker.get("sequence") != record.get(
-        "captured_sequence"
+    clean = is_clean_worktree(record)
+    if "clean_worktree" in marker and marker["clean_worktree"] is not True:
+        raise ValueError("malformed clean_worktree attempt marker")
+    if (
+        marker["attempt"] != record["attempt"]
+        or marker.get("sequence") != record.get("captured_sequence")
+        or ("clean_worktree" in marker) != clean
     ):
         raise ValueError("review attempt was superseded; rerun the gate")
     if claimed and marker.get("claimed") is not True:
@@ -1181,7 +2418,29 @@ def sequence_floor(receipts):
 
 
 def artifact_identity(artifact):
-    """The artifact a blocking verdict binds to: base, head, scope, patch (#573)."""
+    """The artifact a blocking verdict binds to: merge base, head, scope, patch (#573).
+
+    Keyed by the merge base, not the base tip, for the same reason `check`
+    compares merge bases (#680): a sibling advancing the tip must not give a
+    later blocking verdict a different key from the approval it retires.
+    """
+    identity = {
+        "merge_base": artifact["base"]["merge_base"],
+        "head": artifact["head"],
+        "scope": artifact["scope"],
+        "patch_sha256": artifact["review_diff_sha256"],
+    }
+    return identity, digest(encoded(identity))
+
+
+def legacy_artifact_identity(artifact):
+    """The pre-merge-base marker identity, keyed by the base tip.
+
+    Markers written before `artifact_identity` moved to the merge base live
+    under this key. A lookup that computed only the new key would never see
+    them, and a blocker recorded before the upgrade would stop retiring the
+    approvals captured before it. `assert_not_blocked` checks both.
+    """
     identity = {
         "base": artifact["base"]["commit"],
         "head": artifact["head"],
@@ -1209,15 +2468,56 @@ def assert_not_blocked(receipts, record):
     hold `attempt_lock`, so a marker written concurrently is either seen here
     or written after the decision. A receipt without a capture sequence
     predates #573 and is refused whenever a marker exists.
+
+    Markers written before the merge-base key (`legacy_artifact_identity`)
+    are keyed by whatever base TIP that gate saw, which may differ from this
+    record's while naming the same merge base. They cannot be looked up by
+    key, so every legacy marker in the store is read and applies when its
+    head, scope and patch match and its base tip shares this record's merge
+    base, or cannot be resolved at all (fail closed).
     """
-    identity, key = artifact_identity(record["artifact"])
-    path = blocks_dir(receipts) / (key + ".json")
+    artifact = record["artifact"]
+    identity, key = artifact_identity(artifact)
+    directory = blocks_dir(receipts)
+    path = directory / (key + ".json")
     # Only a genuine ENOENT is "no marker": os.path.lexists also answers False
     # when the lookup itself fails (an unsearchable store), which must refuse.
     try:
         os.lstat(path)
     except FileNotFoundError:
+        pass
+    else:
+        refuse_if_blocked_before(path, identity, record)
+    try:
+        entries = sorted(directory.iterdir())
+    except FileNotFoundError:
         return
+    repo = Path(record["repository"])
+    for entry in entries:
+        if entry.suffix != ".json" or entry.is_symlink():
+            continue
+        marker = read_json(entry)
+        legacy = marker.get("artifact") if type(marker) is dict else None
+        if type(legacy) is not dict or "base" not in legacy or "merge_base" in legacy:
+            continue
+        if (
+            legacy.get("head") != artifact["head"]
+            or legacy.get("scope") != artifact["scope"]
+            or legacy.get("patch_sha256") != artifact["review_diff_sha256"]
+        ):
+            continue
+        base = legacy.get("base")
+        if base != artifact["base"]["commit"]:
+            try:
+                shared = git(repo, "merge-base", str(base), artifact["head"]).decode().strip()
+            except (subprocess.SubprocessError, OSError, ValueError, TypeError):
+                shared = None
+            if shared is not None and shared != artifact["base"]["merge_base"]:
+                continue
+        refuse_if_blocked_before(entry, legacy, record)
+
+
+def refuse_if_blocked_before(path, identity, record):
     marker = read_json(path)
     if (
         type(marker) is not dict
@@ -1269,16 +2569,152 @@ def block(args):
     print("Blocking verdict recorded for " + identity["head"])
 
 
+RETAINED_REVIEWS = 30
+
+
+def retain(args):
+    """Keep a reviewer's output past the run that produced it (#788).
+
+    The gate deletes its working files on every exit, and only an approval
+    stores the output in a receipt, so a blocking, failed or cancelled review
+    used to leave its findings nowhere but the terminal. The record is the
+    output's exact bytes, named by the artifact, the lane and the output's own
+    digest: retaining the same output twice is one file. It is evidence only.
+    Nothing reads it to decide a verdict, clear a marker or accept a receipt.
+    """
+    record = read_json(Path(args.snapshot))
+    lane = record["reviewer"]["name"]
+    if lane not in LANES:
+        raise ValueError("unknown review lane: " + str(lane))
+    source = Path(args.output)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("missing or unsafe review output: " + str(source))
+    data = source.read_bytes()
+    if not data:
+        raise ValueError("no review output to retain")
+    _, key = artifact_identity(record["artifact"])
+    _, _, receipts = layout(record["repository"])
+    with attempt_lock(receipts):
+        directory = receipts / "reviews"
+        if directory.is_symlink() or (os.path.lexists(directory) and not directory.is_dir()):
+            raise ValueError("retained review store must be a real directory")
+        directory.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
+        path = directory / f"{key}.{lane}.{digest(data)[:16]}.json"
+        fd, temporary = tempfile.mkstemp(prefix=".review-", dir=str(directory))
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        # Bounded: the newest records stay, this one included.
+        kept = sorted(
+            (item for item in directory.glob("*.json") if item.is_file() and not item.is_symlink()),
+            key=lambda item: (item.stat().st_mtime_ns, item.name),
+        )
+        for item in kept[:-RETAINED_REVIEWS]:
+            if item != path:
+                item.unlink()
+    print(path)
+
+
 def validate_artifact(record):
     assert_attempt(record)
     artifact = record["artifact"]
-    current, patch = stable_capture(
-        Path(record["repository"]), artifact["base"]["ref"], artifact["scope"]
-    )
+    if is_clean_worktree(record):
+        if artifact["scope"] != "committed":
+            raise ValueError("clean_worktree requires committed scope")
+        if "capture_repository" not in record or not isinstance(record["capture_repository"], str):
+            raise ValueError("clean_worktree snapshot missing capture_repository")
+        capture_launcher = record.get("capture_launcher")
+        if capture_launcher is not None and not isinstance(capture_launcher, str):
+            raise ValueError("malformed capture_launcher")
+        source_repo, receipt_repo = verify_clean_worktree_pair(
+            record["capture_repository"], record["repository"]
+        )
+        assert_worktree_clean(source_repo)
+        reviewer = record.get("reviewer") if isinstance(record.get("reviewer"), dict) else {}
+        assert_live_runtime_clean(
+            receipt_repo,
+            executable=reviewer.get("executable"),
+            launcher=capture_launcher,
+            reviewer=reviewer.get("name"),
+        )
+        current, patch = stable_capture(
+            source_repo,
+            artifact["base"]["ref"],
+            "committed",
+            artifact["base"]["commit"],
+        )
+        if oid(receipt_repo, "HEAD") != artifact["head"]:
+            raise ValueError("receipt repository HEAD changed during review")
+    else:
+        if "capture_repository" in record:
+            raise ValueError("unexpected capture_repository")
+        if "capture_launcher" in record:
+            raise ValueError("unexpected capture_launcher")
+        current, patch = stable_capture(
+            Path(record["repository"]),
+            artifact["base"]["ref"],
+            artifact["scope"],
+            artifact["base"]["commit"],
+        )
     if artifact != current:
         raise ValueError("repository changed during review or after approval; rerun the gate")
     assert_attempt(record)
     return patch
+
+
+def build_clean_worktree_receipt(repo, record, patch):
+    snap_artifact = record["artifact"]
+    committed_artifact, committed_patch = stable_committed_objects(
+        repo,
+        snap_artifact["base"]["ref"],
+        snap_artifact["base"]["commit"],
+    )
+    if committed_patch != patch:
+        raise ValueError("clean worktree diff does not match committed objects")
+    for key in (
+        "head",
+        "tree",
+        "base",
+        "scope",
+        "diff_sha256",
+        "review_diff_sha256",
+        "changed_paths",
+        "changed_modes",
+    ):
+        if snap_artifact[key] != committed_artifact[key]:
+            raise ValueError("clean worktree artifact does not match committed objects")
+    snap_links = snap_artifact["instruction_links"]
+    comm_links = committed_artifact["instruction_links"]
+    if set(snap_links) != set(comm_links):
+        raise ValueError("clean worktree instruction links do not match committed objects")
+    for link_path in snap_links:
+        for field in ("target", "link_object", "link_sha256", "target_object", "target_mode"):
+            if snap_links[link_path][field] != comm_links[link_path][field]:
+                raise ValueError("clean worktree instruction links do not match committed objects")
+    classification = classify_tier(committed_artifact, committed_patch, record["policy"])
+    if classification != record["classification"]:
+        raise ValueError("clean worktree classification mismatch")
+    return {
+        "version": record["version"],
+        "attempt": record["attempt"],
+        "captured_sequence": record["captured_sequence"],
+        "repository": record["repository"],
+        "git_directory": record["git_directory"],
+        "clean_worktree": True,
+        "artifact": committed_artifact,
+        "policy": dict(record["policy"]),
+        "classification": classification,
+        "reviewer": dict(record["reviewer"]),
+        "started_at": record["started_at"],
+        "completion": dict(record["completion"]),
+    }
 
 
 def required_lane(tier, risk_paths, changed_paths, unclassifiable=False):
@@ -1380,15 +2816,20 @@ def lane(args):
     repo = repo_root(args.repo)
     base = resolve_base(repo, args.base)
     scope = args.scope
-    if scope == "auto":
-        scope = (
-            "committed"
-            if git(repo, "rev-list", "--max-count=1", oid(repo, base) + "..HEAD").strip()
-            else "uncommitted"
-        )
-    artifact, patch = stable_capture(repo, base, scope)
-    if args.scope == "auto" and scope == "uncommitted" and not artifact["changed_paths"]:
-        artifact, patch = stable_capture(repo, base, "committed")
+    if getattr(args, "clean_worktree", False):
+        if scope != "committed":
+            raise ValueError("--clean-worktree requires --scope committed")
+        artifact, patch = stable_committed_objects(repo, base)
+    else:
+        if scope == "auto":
+            scope = (
+                "committed"
+                if git(repo, "rev-list", "--max-count=1", oid(repo, base) + "..HEAD").strip()
+                else "uncommitted"
+            )
+        artifact, patch = stable_capture(repo, base, scope)
+        if args.scope == "auto" and scope == "uncommitted" and not artifact["changed_paths"]:
+            artifact, patch = stable_capture(repo, base, "committed")
     print(
         json.dumps(
             classify_tier(
@@ -1480,6 +2921,158 @@ def resolve_base(repo, requested=None):
     raise ValueError("base could not be resolved: " + requested)
 
 
+def _validate_materialize_path(rel_path):
+    if not rel_path or "\0" in rel_path or rel_path.startswith("/"):
+        raise ValueError("unsafe path in materialized tree: " + rel_path)
+    parts = rel_path.split("/")
+    for seg in parts:
+        if seg in ("", ".", ".."):
+            raise ValueError("unsafe path component in materialized tree: " + rel_path)
+        lower = seg.lower().rstrip(". ")
+        if lower in (".git", "git~1"):
+            raise ValueError("refusing .git path in materialized tree: " + rel_path)
+    return parts
+
+
+def _read_blobs_batch(repo, object_ids):
+    if not object_ids:
+        return {}
+    unique_ids = list(dict.fromkeys(object_ids))
+    env = _git_env()
+    payload = "".join(obj + "\n" for obj in unique_ids).encode()
+    proc = subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-C",
+            str(repo),
+            "cat-file",
+            "--batch",
+        ],
+        input=payload,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+    out = proc.stdout
+    pos = 0
+    blobs = {}
+    for expected in unique_ids:
+        nl = out.find(b"\n", pos)
+        if nl == -1:
+            raise ValueError("truncated git cat-file --batch header for " + expected)
+        header = out[pos:nl].decode()
+        pos = nl + 1
+        fields = header.split()
+        if len(fields) != 3 or fields[0] != expected or fields[1] != "blob":
+            raise ValueError("unexpected git cat-file --batch header: " + header)
+        size = int(fields[2])
+        end = pos + size
+        if end + 1 > len(out) or out[end : end + 1] != b"\n":
+            raise ValueError("truncated git cat-file --batch body for " + expected)
+        blobs[expected] = out[pos:end]
+        pos = end + 1
+    if pos != len(out):
+        raise ValueError("unexpected trailing bytes from git cat-file --batch")
+    return blobs
+
+
+def _ensure_parent_dir(root, dir_parts):
+    cur = root
+    for seg in dir_parts:
+        cur = cur / seg
+        try:
+            st = cur.lstat()
+        except FileNotFoundError:
+            cur.mkdir(mode=0o755)
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            raise ValueError("cannot materialize through symlink ancestor: " + str(cur))
+        if not stat.S_ISDIR(st.st_mode):
+            raise ValueError("non-directory blocks materialized parent path: " + str(cur))
+
+
+def _write_tree_blobs(repo, head, dest):
+    entries = tree_files(repo, head)
+    regular_items = []
+    symlink_items = []
+    object_ids = []
+    for path in sorted(entries):
+        mode, obj = entries[path]
+        parts = _validate_materialize_path(path)
+        if mode in ("100644", "100755"):
+            regular_items.append((path, parts, mode, obj))
+        elif mode == "120000":
+            symlink_items.append((path, parts, obj))
+        else:
+            raise ValueError("unsupported tree entry mode in clean worktree: " + mode)
+        object_ids.append(obj)
+    blobs = _read_blobs_batch(repo, object_ids)
+    _assert_tree_symlinks_confined(entries, lambda obj: blobs[obj])
+    for path, parts, mode, obj in regular_items:
+        _ensure_parent_dir(dest, parts[:-1])
+        target = dest / path
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(target, flags, 0o644)
+        try:
+            data = blobs[obj]
+            view = memoryview(data)
+            written = 0
+            while written < len(data):
+                written += os.write(fd, view[written:])
+        finally:
+            os.close(fd)
+        os.chmod(target, 0o755 if mode == "100755" else 0o644)
+    for path, parts, obj in symlink_items:
+        _ensure_parent_dir(dest, parts[:-1])
+        target = dest / path
+        os.symlink(os.fsdecode(blobs[obj]), target)
+    _assert_disk_symlinks_confined(dest, [path for path, _, _ in symlink_items])
+
+
+def materialize_clean_worktree(args):
+    _reject_git_routing_overrides()
+    source_repo, receipt_repo = verify_clean_worktree_pair(args.repo, args.receipt_repo)
+    head = oid(source_repo, "HEAD")
+    expected_head = oid(source_repo, args.head)
+    if head != expected_head:
+        raise ValueError("materialized HEAD mismatch")
+    dotgit = source_repo / ".git"
+    if dotgit.is_symlink() or not dotgit.is_file():
+        raise ValueError("clean worktree requires a regular .git file")
+    existing = sorted(entry.name for entry in source_repo.iterdir())
+    if existing != [".git"]:
+        raise ValueError("clean worktree must contain only .git before materialization")
+    wt_gitdir = worktree_gitdir(source_repo)
+    store = os.path.realpath(os.path.join(common_dir(source_repo), "worktrees"))
+    receipt_gitdir = os.path.realpath(git_dir(receipt_repo))
+    if (
+        wt_gitdir is None
+        or not _same_existing_path(os.path.dirname(wt_gitdir), store)
+        or _same_existing_path(wt_gitdir, receipt_gitdir)
+    ):
+        raise ValueError("clean worktree metadata path is not isolated from receipt repository")
+    wt_index = os.path.join(wt_gitdir, "index")
+    if os.path.islink(wt_index):
+        raise ValueError("clean worktree index must not be a symlink")
+    git(
+        source_repo,
+        "read-tree",
+        head,
+        extra_env={
+            "GIT_DIR": wt_gitdir,
+            "GIT_WORK_TREE": str(source_repo),
+            "GIT_INDEX_FILE": wt_index,
+        },
+    )
+    _write_tree_blobs(source_repo, head, source_repo)
+
+
 def capture_attempt(args):
     """Open this lane's attempt and snapshot the artifact; return the run directory.
 
@@ -1487,22 +3080,55 @@ def capture_attempt(args):
     attempt are untouched until this run CLAIMS the artifact (#499), so a gate
     that degrades after capturing costs no other lane's approval.
     """
-    repo, directory, receipts = layout(args.repo)
+    use_receipt_repo = getattr(args, "receipt_repo", None) is not None
+    base_commit = None
+    if use_receipt_repo:
+        _reject_git_routing_overrides()
+        if args.scope != "committed":
+            raise ValueError("--receipt-repo requires --scope committed")
+        source_repo, receipt_repo = verify_clean_worktree_pair(args.repo, args.receipt_repo)
+        assert_worktree_clean(source_repo)
+        launcher = getattr(args, "launcher", None)
+        if (
+            launcher
+            and not os.path.isabs(launcher)
+            and ("/" in launcher or (os.sep != "/" and os.sep in launcher))
+        ):
+            launcher = os.path.join(os.path.realpath(os.getcwd()), launcher)
+        assert_live_runtime_clean(
+            receipt_repo, executable=args.executable, launcher=launcher, reviewer=args.reviewer
+        )
+        receipt_repo, directory, receipts = layout(receipt_repo)
+        base_ref = resolve_base(receipt_repo, args.base)
+        base_commit = oid(receipt_repo, base_ref)
+        args.base = base_ref
+    else:
+        source_repo, directory, receipts = layout(args.repo)
+        receipt_repo = source_repo
     with attempt_lock(receipts):
         # Taken in the same transition as the attempt: a verdict recorded after
         # this point outranks this capture (#573).
         sequence = next_sequence(receipts)
-        attempt = invalidate(receipts, args.reviewer, sequence)
+        attempt = invalidate(receipts, args.reviewer, sequence, clean_worktree=use_receipt_repo)
     scope = args.scope
     if scope == "auto":
         scope = (
             "committed"
-            if git(repo, "rev-list", "--max-count=1", oid(repo, args.base) + "..HEAD").strip()
+            if git(
+                source_repo, "rev-list", "--max-count=1", oid(source_repo, args.base) + "..HEAD"
+            ).strip()
             else "uncommitted"
         )
-    artifact, patch = stable_capture(repo, args.base, scope)
+    artifact, patch = stable_capture(source_repo, args.base, scope, base_commit=base_commit)
     if args.scope == "auto" and scope == "uncommitted" and not artifact["changed_paths"]:
-        artifact, patch = stable_capture(repo, args.base, "committed")
+        artifact, patch = stable_capture(source_repo, args.base, "committed")
+    if use_receipt_repo:
+        assert_worktree_clean(source_repo)
+        assert_live_runtime_clean(
+            receipt_repo, executable=args.executable, launcher=launcher, reviewer=args.reviewer
+        )
+        if oid(receipt_repo, "HEAD") != artifact["head"]:
+            raise ValueError("receipt repository HEAD changed during snapshot")
     run = Path(tempfile.mkdtemp(prefix="run-", dir=str(receipts)))
     (run / "diff.patch").write_bytes(patch)
     os.chmod(run / "diff.patch", 0o600)
@@ -1517,7 +3143,7 @@ def capture_attempt(args):
         "version": 2,
         "attempt": attempt,
         "captured_sequence": sequence,
-        "repository": str(repo),
+        "repository": str(receipt_repo),
         "git_directory": str(directory),
         "artifact": artifact,
         "policy": policy,
@@ -1525,6 +3151,11 @@ def capture_attempt(args):
         "reviewer": {"name": args.reviewer, "executable": args.executable or None},
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
+    if use_receipt_repo:
+        record["capture_repository"] = str(source_repo)
+        if launcher:
+            record["capture_launcher"] = launcher
+        record["clean_worktree"] = True
     atomic_json(run / "snapshot.json", record)
     return run
 
@@ -1562,6 +3193,7 @@ def complete(args):
     output = Path(args.output).read_text() if args.output else ""
     if args.outcome == "passed" and not output.strip():
         raise ValueError("completed review must have output")
+    clean = is_clean_worktree(record)
     record["reviewer"].update(
         requested_model=args.requested_model,
         observed_model=args.observed_model,
@@ -1584,27 +3216,28 @@ def complete(args):
     # CLAIMED the artifact (#499): an unclaimed attempt never retired the other
     # lane, so recording beside it would leave two lanes' evidence standing.
     with attempt_lock(receipts):
-        validate_artifact(record)
+        patch = validate_artifact(record)
         assert_attempt(record, claimed=True)
         assert_not_blocked(receipts, record)
-        atomic_json(receipts / (record["reviewer"]["name"] + ".json"), record)
+        persisted = build_clean_worktree_receipt(repo, record, patch) if clean else record
+        atomic_json(receipts / (persisted["reviewer"]["name"] + ".json"), persisted)
     # The ledger records what the artifact actually is, not what the snapshot
     # claims: a tampered stored classification stays in the receipt for `check`
     # to reject rather than being laundered into the measurement.
-    classification = classify_tier(record["artifact"], patch, record["policy"])
+    classification = classify_tier(persisted["artifact"], patch, persisted["policy"])
     ledger_append(
         receipts,
         {
-            "completed_at": record["completion"]["completed_at"],
-            "lane": record["reviewer"]["name"],
+            "completed_at": persisted["completion"]["completed_at"],
+            "lane": persisted["reviewer"]["name"],
             "outcome": args.outcome,
             "tier": classification["tier"],
             "required_lane": classification["required_lane"],
-            "head": record["artifact"]["head"],
+            "head": persisted["artifact"]["head"],
             "note": args.note or "",
         },
     )
-    print("Review receipt recorded for " + record["artifact"]["head"])
+    print("Review receipt recorded for " + persisted["artifact"]["head"])
 
 
 def check(args):
@@ -1613,10 +3246,16 @@ def check(args):
     if head != oid(repo, "HEAD") or args.head != head:
         raise ValueError("outgoing commit is not the reviewed worktree HEAD")
     expected_base = oid(repo, resolve_base(repo, args.base))
+    expected_merge = git(repo, "merge-base", expected_base, head).decode().strip()
     errors = []
     for lane_name in (args.reviewer,) if args.reviewer else LANES:
         try:
             record = read_json(receipts / (lane_name + ".json"))
+            if "capture_repository" in record:
+                raise ValueError("receipt must not carry capture_repository")
+            if "capture_launcher" in record:
+                raise ValueError("receipt must not carry capture_launcher")
+            clean = is_clean_worktree(record)
             if (
                 type(record["version"]) is not int
                 or record["version"] != 2
@@ -1633,8 +3272,15 @@ def check(args):
             for field in ("requested_model", "observed_model", "model_evidence", "executable"):
                 if reviewer[field] is not None and not isinstance(reviewer[field], str):
                     raise ValueError("malformed reviewer identity")
-            if expected_base != record["artifact"]["base"]["commit"]:
+            # The reviewed diff is merge_base..HEAD, so that is what must still
+            # match. The base TIP may have moved on (a sibling merged, #680);
+            # a receipt for another merge base — a narrower --base, or a branch
+            # the base has since absorbed — still refuses.
+            if expected_merge != record["artifact"]["base"]["merge_base"]:
                 raise ValueError("receipt does not cover the expected base")
+            base_ref = record["artifact"]["base"]["ref"]
+            if not isinstance(base_ref, str) or not base_ref:
+                raise ValueError("malformed receipt base ref")
             completion = record["completion"]
             started = datetime.fromisoformat(record["started_at"])
             completed = datetime.fromisoformat(completion["completed_at"])
@@ -1646,7 +3292,20 @@ def check(args):
                 raise ValueError("malformed review output")
             if completion["outcome"] == "passed" and not completion["output"].strip():
                 raise ValueError("completed review output is empty")
-            patch = validate_artifact(record)
+            if clean:
+                assert_attempt(record)
+                current, patch = stable_committed_objects(
+                    repo,
+                    base_ref,
+                    record["artifact"]["base"]["commit"],
+                )
+                if record["artifact"] != current:
+                    raise ValueError(
+                        "repository changed during review or after approval; rerun the gate"
+                    )
+                assert_attempt(record)
+            else:
+                patch = validate_artifact(record)
             exemption(completion["outcome"], record["artifact"], patch, record["policy"])
             # Recompute on the re-captured patch: the stored classification is
             # receipt content, so only the recomputation is authoritative, and a
@@ -1710,7 +3369,9 @@ def main():
             sub.add_argument("--base")
         if name in ("capture", "begin"):
             sub.add_argument("--scope", choices=("auto", "committed", "uncommitted"), required=True)
+            sub.add_argument("--receipt-repo")
             sub.add_argument("--executable")
+            sub.add_argument("--launcher")
             sub.add_argument("--tier1-max-lines", default=TIER1_MAX_LINES)
             sub.add_argument("--tier1-max-bytes", default=TIER1_MAX_BYTES)
         if name == "check":
@@ -1718,15 +3379,23 @@ def main():
     for name in ("claim", "verify", "classify", "block"):
         sub = commands.add_parser(name)
         sub.add_argument("--snapshot", required=True)
+    sub = commands.add_parser("retain")
+    sub.add_argument("--snapshot", required=True)
+    sub.add_argument("--output", required=True)
     sub = commands.add_parser("lane")
     sub.add_argument("--repo", default=".")
     sub.add_argument("--base")
     sub.add_argument("--scope", choices=("auto", "committed", "uncommitted"), default="committed")
+    sub.add_argument("--clean-worktree", action="store_true")
     sub.add_argument("--tier1-max-lines", default=TIER1_MAX_LINES)
     sub.add_argument("--tier1-max-bytes", default=TIER1_MAX_BYTES)
     sub = commands.add_parser("stats")
     sub.add_argument("--repo", default=".")
     sub.add_argument("--since-days", type=int, default=7)
+    sub = commands.add_parser("materialize")
+    sub.add_argument("--repo", required=True)
+    sub.add_argument("--receipt-repo", required=True)
+    sub.add_argument("--head", required=True)
     sub = commands.add_parser("complete")
     sub.add_argument("--snapshot", required=True)
     sub.add_argument("--outcome", choices=("passed", "tier-1", "no-diff"), required=True)
@@ -1743,6 +3412,8 @@ def main():
             # already holds the lock when it calls it.
             with attempt_lock(receipts):
                 invalidate(receipts, args.reviewer)
+        elif args.command == "materialize":
+            materialize_clean_worktree(args)
         elif args.command == "verify":
             validate_artifact(read_json(Path(args.snapshot)))
         elif args.command in ("capture", "claim"):

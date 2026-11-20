@@ -13,6 +13,28 @@ yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 green()  { printf '\033[32m%s\033[0m\n' "$*"; }
 bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
 
+# Clear clean-worktree ownership globals unconditionally on source so
+# entrypoints that source gate-lib.sh and invoke gate_cleanup (such as
+# review-and-push.sh's tier-1 path) never act on inherited environment values.
+GATE_CLEAN_WT=""
+GATE_CLEAN_WT_EXTRA=""
+GATE_CLEAN_WT_ROOT=""
+GATE_CLEAN_WT_PID=""
+# shellcheck disable=SC2034  # Initialized on source; shared across gates.
+GATE_RECEIPT_REPO=""
+# shellcheck disable=SC2034  # Initialized on source; shared across gates.
+GATE_WORK_REPO=""
+GATE_CLI_LAUNCHER=""
+GATE_GIT_ENV_UNSET=()
+for _gate_git_var in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES \
+  GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE \
+  GIT_NAMESPACE GIT_PREFIX GIT_ATTR_SOURCE GIT_CONFIG GIT_CONFIG_PARAMETERS \
+  GIT_CONFIG_COUNT; do
+  GATE_GIT_ENV_UNSET+=(-u "$_gate_git_var")
+done
+unset _gate_git_var
+
 # ─── Artifact capture and receipts ─────────────────────────────
 # All content extraction belongs to the helper: even a normal worktree diff
 # can execute a configured clean filter before --no-textconv takes effect.
@@ -24,8 +46,9 @@ bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
 # approval valid (#499). Warn just BEFORE the claim retires anything. Presence
 # only: whether that receipt was valid is `review-receipt.py check`'s business.
 gate_warn_competing_receipt() {
-  local receipts other
-  receipts="$(git rev-parse --git-path review-receipts 2>/dev/null)" || return 0
+  local repo="${GATE_RECEIPT_REPO:-.}" receipts other
+  receipts="$(git -C "$repo" rev-parse --git-path review-receipts 2>/dev/null)" || return 0
+  [[ "$receipts" == /* ]] || receipts="$repo/$receipts"
   for other in codex antigravity; do
     [[ "$other" != "$GATE_REVIEWER" ]] || continue
     [[ -f "$receipts/$other.json" ]] || continue
@@ -39,18 +62,38 @@ gate_init_receipt() {
   RECEIPT_HELPER="$SCRIPT_DIR/review-receipt.py"
   command -v python3 >/dev/null 2>&1 || { red "Python 3 is required for artifact receipts."; exit 2; }
   [[ -f "$RECEIPT_HELPER" ]] || { red "Review receipt helper missing: $RECEIPT_HELPER"; exit 2; }
-  python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer "$GATE_REVIEWER" || exit 2
+  python3 "$RECEIPT_HELPER" invalidate --repo "${GATE_RECEIPT_REPO:-.}" --reviewer "$GATE_REVIEWER" || exit 2
+}
+
+gate_reject_git_routing_overrides() {
+  local git_overrides="" git_var
+  for git_var in "${!GIT_@}"; do
+    case "$git_var" in
+      GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_OBJECT_DIRECTORY|GIT_DIR|GIT_WORK_TREE|\
+      GIT_IMPLICIT_WORK_TREE|GIT_COMMON_DIR|GIT_GRAFT_FILE|GIT_INDEX_FILE|\
+      GIT_REPLACE_REF_BASE|GIT_PREFIX|GIT_SHALLOW_FILE|GIT_NAMESPACE|GIT_ATTR_SOURCE|\
+      GIT_CEILING_DIRECTORIES|GIT_CONFIG|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|\
+      GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
+        git_overrides+="${git_overrides:+, }$git_var" ;;
+    esac
+  done
+  if [[ -n "$git_overrides" ]]; then
+    red "✖ Inherited Git routing or configuration overrides conflict with --clean-worktree; unset: $git_overrides"
+    exit 2
+  fi
 }
 
 gate_resolve_base() {
+  [[ "${CLEAN_WORKTREE:-false}" != true ]] || gate_reject_git_routing_overrides
+  local repo="${GATE_RECEIPT_REPO:-.}"
   if [[ -z "$BASE" ]]; then
-    BASE="$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
+    BASE="$(git -C "$repo" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
     [[ -z "$BASE" ]] && BASE="main"
   fi
   BASE_REF=""
-  if git rev-parse --verify --quiet --end-of-options "origin/$BASE^{commit}" >/dev/null; then
+  if git -C "$repo" rev-parse --verify --quiet --end-of-options "origin/$BASE^{commit}" >/dev/null; then
     BASE_REF="origin/$BASE"
-  elif git rev-parse --verify --quiet --end-of-options "$BASE^{commit}" >/dev/null; then
+  elif git -C "$repo" rev-parse --verify --quiet --end-of-options "$BASE^{commit}" >/dev/null; then
     BASE_REF="$BASE"
   fi
   if [[ -z "$BASE_REF" && "$FORCE_UNCOMMITTED" != "true" ]]; then
@@ -66,18 +109,150 @@ gate_select_diff_target() {
   return 0
 }
 
+_gate_remove_worktree() {
+  local repo="$1" wt="$2" removed=0 common entry registered
+  [[ -n "$wt" ]] || return 0
+  if [[ -n "$repo" ]]; then
+    if env "${GATE_GIT_ENV_UNSET[@]}" git -C "$repo" -c core.hooksPath=/dev/null worktree remove --force -- "$wt" >/dev/null 2>&1; then
+      removed=1
+    fi
+  fi
+  rm -rf -- "$wt" >/dev/null 2>&1 || true
+  if [[ "$removed" -ne 1 && -n "$repo" ]]; then
+    common="$(env "${GATE_GIT_ENV_UNSET[@]}" git -C "$repo" -c core.hooksPath=/dev/null rev-parse --path-format=absolute --git-common-dir 2>/dev/null && printf .)" || common=""
+    common=${common%$'\n.'}
+    if [[ -n "$common" && -d "$common/worktrees" ]]; then
+      for entry in "$common/worktrees"/*; do
+        [[ ! -L "$entry" && -d "$entry" && -f "$entry/gitdir" && ! -L "$entry/gitdir" ]] || continue
+        registered="$(python3 -c 'import sys; print(open(sys.argv[1], "rb").read().rstrip(b"\r\n").decode("utf-8", "surrogateescape"), end="")' "$entry/gitdir" 2>/dev/null && printf .)" || continue
+        registered=${registered%.}
+        if [[ "$registered" == "$wt/.git" ]]; then
+          rm -rf -- "$entry" >/dev/null 2>&1 || true
+        fi
+      done
+    fi
+  fi
+}
+
+_gate_materialize_detached_worktree() {
+  local repo="$1" dest="$2" head="$3"
+  env "${GATE_GIT_ENV_UNSET[@]}" GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects -C "$repo" \
+    -c core.sparseCheckout=false -c submodule.recurse=false \
+    -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+    worktree add --no-checkout --quiet --detach -- "$dest" "$head" || return 1
+  python3 "$RECEIPT_HELPER" materialize \
+    --repo "$dest" --receipt-repo "$repo" --head "$head" || return 1
+}
+
+gate_clean_worktree_add_extra() {
+  local dest="$1" head="$2"
+  [[ "${GATE_CLEAN_WT_PID:-}" == "$$" && -n "${GATE_RECEIPT_REPO:-}" && -n "${RECEIPT_HELPER:-}" ]] || return 1
+  gate_reject_git_routing_overrides
+  # Record before creation so EXIT/signal handlers still clean up if aborted mid-setup.
+  GATE_CLEAN_WT_EXTRA="$dest"
+  _gate_materialize_detached_worktree "$GATE_RECEIPT_REPO" "$dest" "$head"
+}
+
+gate_clean_worktree_remove_extra() {
+  [[ "${GATE_CLEAN_WT_PID:-}" == "$$" && -n "${GATE_CLEAN_WT_EXTRA:-}" ]] || return 0
+  local wt_extra="$GATE_CLEAN_WT_EXTRA" repo="${GATE_RECEIPT_REPO:-}"
+  GATE_CLEAN_WT_EXTRA=""
+  _gate_remove_worktree "$repo" "$wt_extra"
+}
+
+gate_clean_worktree_cleanup() {
+  [[ "${GATE_CLEAN_WT_PID:-}" == "$$" ]] || return 0
+  local wt_root="${GATE_CLEAN_WT_ROOT:-}" wt="${GATE_CLEAN_WT:-}" wt_extra="${GATE_CLEAN_WT_EXTRA:-}" repo="${GATE_RECEIPT_REPO:-}"
+  GATE_CLEAN_WT_EXTRA=""
+  GATE_CLEAN_WT_ROOT=""
+  GATE_CLEAN_WT=""
+  GATE_CLEAN_WT_PID=""
+  [[ -n "$wt_root" || -n "$wt" || -n "$wt_extra" ]] || return 0
+  _gate_remove_worktree "$repo" "$wt_extra"
+  _gate_remove_worktree "$repo" "$wt"
+  [[ -z "$wt_root" ]] || rm -rf -- "$wt_root" >/dev/null 2>&1 || true
+}
+
+gate_clean_worktree_setup() {
+  if [[ "${FORCE_COMMITTED:-false}" != true || "${FORCE_UNCOMMITTED:-false}" == true ]]; then
+    red "✖ --clean-worktree requires --committed and cannot be combined with --uncommitted."
+    exit 2
+  fi
+  if [[ -z "${RECEIPT_HELPER:-}" || ! -f "$RECEIPT_HELPER" ]]; then
+    red "✖ Review receipt helper is missing for --clean-worktree setup."
+    exit 2
+  fi
+  gate_reject_git_routing_overrides
+  local repo_raw pinned_head tmp_base wt_root_canon wt_base
+  repo_raw="$(env "${GATE_GIT_ENV_UNSET[@]}" git rev-parse --show-toplevel && printf .)" || {
+    red "✖ Cannot resolve repository root for --clean-worktree."
+    exit 2
+  }
+  repo_raw=${repo_raw%$'\n.'}
+  GATE_RECEIPT_REPO="$(cd -P -- "$repo_raw" && pwd -P && printf .)" || {
+    red "✖ Cannot canonicalize repository root for --clean-worktree."
+    exit 2
+  }
+  GATE_RECEIPT_REPO=${GATE_RECEIPT_REPO%$'\n.'}
+  pinned_head="$(env "${GATE_GIT_ENV_UNSET[@]}" GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects -C "$GATE_RECEIPT_REPO" rev-parse --verify --end-of-options 'HEAD^{commit}')" || {
+    red "✖ Cannot resolve HEAD commit for --clean-worktree."
+    exit 2
+  }
+  tmp_base="${TMPDIR:-/tmp}"
+  while [[ "$tmp_base" != "/" && "$tmp_base" == */ ]]; do
+    tmp_base="${tmp_base%/}"
+  done
+  GATE_CLEAN_WT_ROOT="$(mktemp -d "$tmp_base/gate-clean-wt.XXXXXX")" || {
+    red "✖ Cannot create temporary directory for --clean-worktree."
+    exit 2
+  }
+  GATE_CLEAN_WT_PID="$$"
+  if ! chmod 700 "$GATE_CLEAN_WT_ROOT"; then
+    rm -rf -- "$GATE_CLEAN_WT_ROOT" || true
+    GATE_CLEAN_WT_ROOT=""
+    GATE_CLEAN_WT_PID=""
+    red "✖ Cannot set permissions on temporary clean worktree directory."
+    exit 2
+  fi
+  if ! wt_root_canon="$(cd -P -- "$GATE_CLEAN_WT_ROOT" && pwd -P && printf .)"; then
+    rm -rf -- "$GATE_CLEAN_WT_ROOT" || true
+    GATE_CLEAN_WT_ROOT=""
+    GATE_CLEAN_WT_PID=""
+    red "✖ Cannot canonicalize temporary clean worktree directory."
+    exit 2
+  fi
+  GATE_CLEAN_WT_ROOT=${wt_root_canon%$'\n.'}
+  wt_base="$(basename -- "$GATE_CLEAN_WT_ROOT")"
+  GATE_CLEAN_WT="$GATE_CLEAN_WT_ROOT/$wt_base"
+  # Arm cleanup before `git worktree add` so an interruption during creation or
+  # materialization removes both the temporary checkout and worktree metadata.
+  # shellcheck disable=SC2064
+  trap "${GATE_EXIT_HANDLER:-gate_cleanup}" EXIT
+  if ! _gate_materialize_detached_worktree "$GATE_RECEIPT_REPO" "$GATE_CLEAN_WT" "$pinned_head"; then
+    red "✖ Failed to materialize clean detached worktree for --clean-worktree."
+    exit 2
+  fi
+  # shellcheck disable=SC2034  # Read by gate_extract_diff and sourcing gates.
+  GATE_WORK_REPO="$GATE_CLEAN_WT"
+}
+
 gate_cleanup() {
+  gate_clean_worktree_cleanup
   [[ -z "${GATE_RUN_DIR:-}" ]] || rm -rf -- "$GATE_RUN_DIR"
 }
 
 gate_extract_diff() {
-  local args=(capture --repo . --scope "$GATE_SCOPE" --reviewer "$GATE_REVIEWER")
+  local work_repo="${GATE_WORK_REPO:-.}"
+  local args=(capture --repo "$work_repo" --scope "$GATE_SCOPE" --reviewer "$GATE_REVIEWER")
   GATE_CLAIMED=0
+  [[ -z "${GATE_RECEIPT_REPO:-}" ]] || args+=(--receipt-repo "$GATE_RECEIPT_REPO")
   [[ -z "$BASE_REF" ]] || args+=(--base "$BASE_REF")
-  local executable
+  local executable launcher
   executable="$(command -v "$GATE_CLI" && printf .)" || executable=""
   executable=${executable%$'\n.'}
   args+=(--executable "$executable")
+  launcher="${GATE_CLI_LAUNCHER:-}"
+  [[ -z "$launcher" || "$launcher" == "$executable" ]] || args+=(--launcher "$launcher")
   args+=("--tier1-max-lines=${GATE_TIER1_MAX_LINES:-200}")
   # The tier-1 BYTE ceiling is deliberately NOT overridable from here: its only
   # source is review-receipt.py's TIER1_MAX_BYTES, which every caller inherits by
@@ -88,12 +263,19 @@ gate_extract_diff() {
   # failing a push instead of escalating it to a review. Adding the knob means
   # forwarding it to that `lane` call in the same change, with a wrapper test.
   GATE_RUN_DIR="$(python3 "$RECEIPT_HELPER" "${args[@]}")" || exit 2
-  trap gate_cleanup EXIT
+  # A gate that already installed its own EXIT handler names it in
+  # GATE_EXIT_HANDLER, so this line does not swap it out for plain cleanup
+  # while the gate's cancel trap is still armed: a signal in that window used
+  # to run the cancel handler under the wrong EXIT handler and leave with
+  # status 2, the verdict code, for a run that reached no verdict.
+  # Expanding now is the point: the handler is chosen here, once.
+  # shellcheck disable=SC2064
+  trap "${GATE_EXIT_HANDLER:-gate_cleanup}" EXIT
   # shellcheck disable=SC2034  # DIFF_CONTENT is consumed by both sourcing gates.
   DIFF_CONTENT="$(cat "$GATE_RUN_DIR/diff.patch")" || exit 2
   GATE_SCOPE="$(jq -r '.artifact.scope' "$GATE_RUN_DIR/snapshot.json")"
   # shellcheck disable=SC2034  # Read by the sourcing gates.
-  TARGET_DESC="$GATE_SCOPE changes (pinned HEAD, base ${BASE_REF:-unused})"
+  TARGET_DESC="$GATE_SCOPE changes (pinned HEAD, base ${BASE_REF:-unused}${GATE_CLEAN_WT:+, clean worktree})"
 }
 
 gate_changed_paths() {
@@ -393,6 +575,13 @@ gate_verify_agy_label() {
 #               degrades to a warning rather than a false fallback verdict.
 #   returns 1 — records exist but none of the newest mention the label.
 # Tests override the records location via AGY_CONVERSATIONS_DIR.
+# gate_ere_escape <text> — escape one operand for `grep -E` so it matches literally.
+gate_ere_escape() {
+  # The bracket expression lists `$` literally; nothing here should expand.
+  # shellcheck disable=SC2016
+  printf '%s' "$1" | sed -e 's/[][\\.*^$()+?{}|]/\\&/g'
+}
+
 gate_verify_agy_model() {
   local want="$1"
   local dir="${AGY_CONVERSATIONS_DIR:-$HOME/.gemini/antigravity-cli/conversations}"
@@ -410,9 +599,38 @@ gate_verify_agy_model() {
     yellow "⚠ model DB spot-check: 'strings' not found — cannot inspect the conversation records (warning only)."
     return 0
   fi
+  # agy 1.4.x records the model's slug (`agy models` prints it beside the
+  # label: "gemini-4-argon-high	Gemini 4 Argon (High)"), not the label
+  # (#696). Accept either. The slug is the label lowercased, with parentheses
+  # dropped and spaces as dashes; Claude slugs also turn dots into dashes.
+  # The derived slug must never widen the match: a label with no letters or
+  # digits derives an empty or lone-dash slug (and `grep -F ""` matches every
+  # line), and a shorter label's slug is a prefix of a longer model's slug
+  # ("gemini-4-argon" vs "gemini-4-argon-high"). So the slug forms match only
+  # as a whole token, bounded by characters that cannot continue a slug, and a
+  # label without a letter or digit is matched literally only. Every operand
+  # is escaped into one ERE so the label itself still matches literally.
+  local slug dotless label_re slug_re
+  slug="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]' | tr -d '()' | tr -s ' ' '-')"
+  dotless="${slug//./-}"
+  # Both forms match as whole tokens: nothing alphanumeric may run straight
+  # into or out of them, and a slug may not continue with _ . or - either, so
+  # "gemini-4-argon" matches neither "gemini-4-argon-high" nor
+  # "gemini-4-argon_high". A label followed by a parenthesised tier, as
+  # "Gemini 4 Argon" is by " (High)", is still a prefix match and is left to
+  # the authoritative log-line check above.
+  label_re="(^|[^[:alnum:]])$(gate_ere_escape "$want")([^[:alnum:]]|$)"
+  slug_re=""
+  if [[ "$slug" == *[a-z0-9]* ]]; then
+    slug_re="(^|[^[:alnum:]_.-])($(gate_ere_escape "$slug")|$(gate_ere_escape "$dotless"))([^[:alnum:]_.-]|$)"
+  fi
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    if strings "$f" 2>/dev/null | grep -qF "$want"; then
+    # `grep -q` exits at the first match and `strings` then dies of SIGPIPE.
+    # Under the gates' `set -o pipefail` that made a MATCH read as a miss on
+    # any record large enough to still be streaming (#696), so the reader's
+    # status is discarded and only grep's decides.
+    if { strings "$f" 2>/dev/null || true; } | grep -qE -e "$label_re" ${slug_re:+-e "$slug_re"}; then
       green "✓ model DB spot-check: $(basename "$f") records the requested label '$want'."
       return 0
     fi
@@ -445,18 +663,50 @@ GATE_ISSUE_INDEX=""
 GATE_ISSUE_NO_REASON="-"
 
 # gate_issue_marker <file> — the exact marker text for a location.
+# Two formats, told apart by their name, so neither can be read as the other:
+#   codex-gate-loc:   the file name as written. Used, as it always has been,
+#                     for a name with no `%`, `<`, `>`, backslash or control
+#                     character: for such a name it is already unambiguous,
+#                     and issues filed before the second format keep matching.
+#   codex-gate-loc2:  every other name, with those characters percent-encoded.
+#                     The name can then neither end the comment nor spell a
+#                     second marker inside it, no two names share a marker,
+#                     and nothing in it is rewritten by the index's @tsv.
+# A name that needs the second format is never looked up in the first: what
+# the first format wrote for such names (characters dropped, backslashes
+# doubled by the row it once passed through) cannot be told from another
+# file's marker, so an issue filed that way is filed once more instead.
+# shellcheck disable=SC2034  # Also read by the sourcing gate.
+GATE_ISSUE_PARTS_FLAG='<!-- codex-gate-parts -->'
 gate_issue_marker() {
-  # The marker is an HTML comment; strip control characters and the closing
-  # sequence so a reviewer-supplied path cannot terminate it early.
-  local file
-  file="$(printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/-->//g')"
-  printf '<!-- codex-gate-loc:%s:%s -->' "$GATE_ISSUE_REPO" "$file"
+  # A marker is a persisted key, written by one run and matched by another,
+  # so it is derived from the name's bytes: under the C locale bash walks
+  # bytes and `[:cntrl:]` is the ASCII control set, whatever locale the gate
+  # was started in. A name that is not ASCII keeps its bytes as they are.
+  local LC_ALL=C
+  local file="$1" encoded="" char i
+  if [[ "$file" != *[%\<\>\\[:cntrl:]]* ]]; then
+    printf '<!-- codex-gate-loc:%s:%s -->' "$GATE_ISSUE_REPO" "$file"
+    return 0
+  fi
+  for ((i = 0; i < ${#file}; i++)); do
+    char="${file:i:1}"
+    case "$char" in
+      %) char=%25 ;;
+      \<) char=%3C ;;
+      \>) char=%3E ;;
+      \\) char=%5C ;;
+      [[:cntrl:]]) printf -v char '%%%02X' "'$char" ;;
+    esac
+    encoded+="$char"
+  done
+  printf '<!-- codex-gate-loc2:%s:%s -->' "$GATE_ISSUE_REPO" "$encoded"
 }
 
 # gate_issue_index_marker <file> — the marker as it appears in GATE_ISSUE_INDEX.
 # The index is jq @tsv output, which doubles backslashes (and encodes tab, LF
-# and CR as \t \n \r, none of which survive gate_issue_marker's control-byte
-# strip), and `read -r` keeps those escapes literal. Lookups and in-run records
+# and CR as \t \n \r, none of which gate_issue_marker leaves in a marker),
+# and `read -r` keeps those escapes literal. Lookups and in-run records
 # must use this form or a path containing a backslash never matches: its open
 # issue would be refiled every run and a not-planned closure would not suppress.
 gate_issue_index_marker() {
@@ -474,8 +724,8 @@ gate_issue_index_marker() {
 # GraphQL-backed — the very call a restricted sandbox may refuse. Accept a
 # bare two-part slug only: a nested or empty parse is a failure, never a guess.
 gate_repo_slug() {
-  local url slug=""
-  url="$(git config --get remote.origin.url 2>/dev/null)" || url=""
+  local url slug="" repo="${GATE_RECEIPT_REPO:-.}"
+  url="$(git -C "$repo" config --get remote.origin.url 2>/dev/null)" || url=""
   case "$url" in
     *github.com[:/]*)
       slug="${url##*github.com}"
@@ -498,6 +748,7 @@ gate_repo_slug() {
 # unavailable; a caller that files anyway files blind, which is the duplicate
 # noise this exists to stop.
 gate_issue_prefetch() {
+  local num state reason body author line extra
   if [[ -n "${1:-}" ]]; then
     GATE_ISSUE_REPO="$1"
   else
@@ -516,6 +767,25 @@ gate_issue_prefetch() {
     gh api "repos/$GATE_ISSUE_REPO/issues?state=all&per_page=100" --paginate \
     --jq '.[] | select(.pull_request == null)
           | [(.number|tostring), .state, (.state_reason // env.GATE_ISSUE_NO_REASON), (.body // "")] | @tsv' 2>/dev/null)" || return 1
+  # An issue filed in parts keeps its location markers in a closing comment
+  # (publish_finding in codex-review-gate.sh), so its comments join the index
+  # as further rows for the same issue. Only the issue author's: anyone may
+  # comment on a public issue, and a marker is what makes a location read as
+  # tracked or accepted. A read that fails fails the prefetch, so the caller
+  # files nothing rather than filing blind. Issues closed as completed are
+  # skipped: gate_issue_lookup never matches them.
+  while IFS=$'\t' read -r num state reason body; do
+    [[ -n "$num" && "$body" == *"$GATE_ISSUE_PARTS_FLAG"* ]] || continue
+    [[ "$state" == open || "$reason" == not_planned ]] || continue
+    author="$(gh api "repos/$GATE_ISSUE_REPO/issues/$num" --jq '.user.login // ""' 2>/dev/null)" || return 1
+    [[ -n "$author" ]] || return 1
+    extra="$(GATE_ISSUE_AUTHOR="$author" \
+      gh api "repos/$GATE_ISSUE_REPO/issues/$num/comments?per_page=100" --paginate \
+      --jq '.[] | select(.user.login == env.GATE_ISSUE_AUTHOR) | [(.body // "")] | @tsv' 2>/dev/null)" || return 1
+    while IFS= read -r line; do
+      [[ -z "$line" ]] || GATE_ISSUE_INDEX+=$'\n'"$num"$'\t'"$state"$'\t'"$reason"$'\t'"$line"
+    done <<<"$extra"
+  done <<<"$GATE_ISSUE_INDEX"
   return 0
 }
 
@@ -549,6 +819,83 @@ gate_issue_lookup() {
 # a second finding at the same location in this run comments instead of filing.
 gate_issue_remember() {
   GATE_ISSUE_INDEX+=$'\n'"$1"$'\t'"open"$'\t'"$GATE_ISSUE_NO_REASON"$'\t'"$(gate_issue_index_marker "$2")"
+}
+
+# gate_text_chars <file> — print the file's length in characters, counted as
+# gate_split_text counts them (UTF-8 code points), not as `wc -m` does, whose
+# answer follows the locale and is a byte count under C.
+gate_text_chars() {
+  python3 - "$1" <<'PYCHARS'
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="surrogateescape", newline="") as stream:
+    print(len(stream.read()))
+PYCHARS
+}
+
+# gate_split_text <file> <limit> <prefix> — write <file> as <prefix>1..N, each
+# at most <limit> characters, and print N. Parts end at line ends; only a line
+# longer than the limit is cut inside. Nothing is added or dropped: the parts
+# in order are the file.
+gate_split_text() {
+  python3 - "$1" "$2" "$3" <<'PYSPLIT'
+import sys
+
+path, limit, prefix = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+if limit < 1:
+    raise SystemExit("split limit must be positive")
+with open(path, encoding="utf-8", errors="surrogateescape", newline="") as stream:
+    text = stream.read()
+parts, current = [], ""
+for line in text.splitlines(keepends=True):
+    while len(line) > limit:
+        if current:
+            parts.append(current)
+            current = ""
+        parts.append(line[:limit])
+        line = line[limit:]
+    if len(current) + len(line) > limit:
+        parts.append(current)
+        current = ""
+    current += line
+if current:
+    parts.append(current)
+for number, part in enumerate(parts, 1):
+    with open(prefix + str(number), "w", encoding="utf-8", errors="surrogateescape", newline="") as stream:
+        stream.write(part)
+print(len(parts))
+PYSPLIT
+}
+
+# gate_issue_send <endpoint> <json> [<method>] — one REST write, the request
+# on stdin: a body passed as an argument fails outright past the kernel's cap
+# on a single argument. Returns 0 and sets GATE_SENT_URL (the html_url GitHub
+# answered with) on success. On failure GATE_SENT_LABEL_REJECTED is true only
+# for an HTTP 422 whose every error is a label validation error: the one
+# failure that proves nothing was created, so the one a caller may retry
+# without the label. Any other failure may follow a write that succeeded.
+gate_issue_send() {
+  local status=0 response answer
+  GATE_SENT_URL="" GATE_SENT_LABEL_REJECTED=false
+  response="$(gh api "$1" ${3:+--method "$3"} --input - --include <<<"$2" 2>/dev/null)" || status=$?
+  answer="$(sed '1,/^[[:space:]]*$/d' <<<"$response")"
+  if [[ "$status" -eq 0 ]]; then
+    GATE_SENT_URL="$(jq -er '.html_url | select(type == "string" and length > 0)' <<<"$answer" 2>/dev/null)" || GATE_SENT_URL=""
+    [[ -n "$GATE_SENT_URL" ]]
+    return
+  fi
+  if [[ "$response" =~ ^HTTP/[0-9.]+[[:space:]]422[[:space:]] ]] \
+    && jq -e '
+      (.errors | type == "array" and length > 0) and
+      all(.errors[];
+        ((.resource == "Issue" and .field == "labels") or
+         (.resource == "Label" and .field == "name")) and
+        (.code == "invalid" or .code == "missing" or .code == "missing_field"))
+    ' <<<"$answer" >/dev/null 2>&1; then
+    # shellcheck disable=SC2034  # Read by the sourcing gate.
+    GATE_SENT_LABEL_REJECTED=true
+  fi
+  return 1
 }
 
 # ─── .codex-review-ignore ──────────────────────────────────────

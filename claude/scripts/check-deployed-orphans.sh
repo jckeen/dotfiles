@@ -100,8 +100,9 @@ RUNTIME_FILES=(
   .DS_Store .credentials.json .gitattributes .gitignore .gitmodules
   .last-cleanup .last-update-result.json .lsp.json .mcp.json LICENSE
   daemon.log dev-dir history.jsonl mcp-needs-auth-cache.json
-  # operator-queue.md: durable operator-action queue (PR #223) — written by
-  # handoffs, read by OperatorQueueReminder.hook.sh.
+  # operator-queue.md: the legacy operator-action queue file (PR #223), now
+  # retired; handoffs file issues instead, and OperatorQueueReminder.hook.sh
+  # still reads the file until its Historical banner is in place.
   operator-queue.md
   settings.local.json
 )

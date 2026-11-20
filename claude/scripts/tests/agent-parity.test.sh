@@ -101,6 +101,10 @@ assert() {
 #   adversarial-verification-> "verification is adversarial"
 #   handoff-claim-repro     -> "claim to disprove"
 #   two-floor-grounding     -> "two-floor grounding"
+#   ci-cost                 -> "CI minutes are a budget"
+#   build-standards         -> "build standards hold in every language"
+#   tests-assert-behavior   -> "a test asserts behavior"
+#   real-engine-tests       -> "real engine or parser over ... hand-rolled regex"
 claude_frag() {
   w agents/canon/fragments/claude.md \
     '# Claude global rules' \
@@ -114,7 +118,11 @@ claude_frag() {
     '- One owner of the working tree at a time.' \
     '- Verification is adversarial, not an echo chamber.' \
     '- A handoff carries the claim to disprove and the exact repro command.' \
-    '- Two-floor grounding: a project floor plus an external floor.'
+    '- Two-floor grounding: a project floor plus an external floor.' \
+    '- Hosted CI minutes are a budget, in every repo.' \
+    '- Build standards hold in every language.' \
+    '- A test asserts behavior: call the code and check its result.' \
+    '- Prefer the real engine or parser over a hand-rolled regex scanner in tests.'
 }
 
 # Antigravity side, same concepts in a different voice.
@@ -131,7 +139,11 @@ gemini_frag() {
     '- One owner of the working tree at a time; use a separate worktree.' \
     '- Verification is adversarial: try to break the claim.' \
     '- Ask for the claim to disprove and the exact repro command.' \
-    '- Two-floor grounding: verify a project floor and an external floor.'
+    '- Two-floor grounding: verify a project floor and an external floor.' \
+    '- Hosted CI minutes are a budget, in every repo.' \
+    '- Build standards hold in every language.' \
+    '- A test asserts behavior: call the code and check its result.' \
+    '- Prefer the real engine or parser over a hand-rolled regex scanner in tests.'
 }
 
 # Codex side, same concepts in a third voice. $1 optionally names a rule
@@ -161,14 +173,22 @@ codex_frag() {
     || lines+=('- A handoff carries the claim to disprove and the repro command.')
   [[ "$omit" == two-floor-grounding ]] \
     || lines+=('- Two-floor grounding: a project floor and an external floor.')
+  [[ "$omit" == ci-cost ]] \
+    || lines+=('- Hosted CI minutes are a budget, in every repo.')
+  [[ "$omit" == build-standards ]] \
+    || lines+=('- Build standards hold in every language.')
+  [[ "$omit" == tests-assert-behavior ]] \
+    || lines+=('- A test asserts behavior, never source text or a mock call.')
+  [[ "$omit" == real-engine-tests ]] \
+    || lines+=('- Prefer the real engine or parser over a hand-rolled regex or grammar scanner.')
   w agents/canon/fragments/codex.md "${lines[@]}"
 }
 
-# The root AGENTS.md brief (ADR-0009). It is a generator target but is NOT held
+# The root AGENTS.md cloud-agent brief. It is a generator target but is NOT held
 # to the RULES phrase list, so the fixture fragment carries no concepts — that
 # absence is itself the assertion that check 1 does not reach it.
-jules_frag() {
-  w agents/canon/fragments/jules.md \
+cloud_frag() {
+  w agents/canon/fragments/cloud.md \
     '# Repository guidance for cloud agents' \
     '- One pull request per finding.'
 }
@@ -177,7 +197,7 @@ all_frags() {
   claude_frag
   gemini_frag
   codex_frag "${1:-}"
-  jules_frag
+  cloud_frag
 }
 
 # --- Case 1: all files complete → pass ---------------------------------------
@@ -218,12 +238,21 @@ check "bare 'scope' keyword no longer satisfies scoped-edits" 1 "scoped-edits"
 
 # --- Cases 6-9: each lane-contract / two-floor rule can fail independently ---
 for rule in one-owner-worktree adversarial-verification handoff-claim-repro \
-  two-floor-grounding; do
+  two-floor-grounding ci-cost build-standards tests-assert-behavior real-engine-tests; do
   new_repo
   all_frags "$rule"
   gen
   check "missing $rule fails as drift" 1 "$rule"
 done
+
+# Bare keywords ("regex", "parser") without the rule phrase do not satisfy real-engine-tests.
+new_repo
+all_frags real-engine-tests
+{
+  echo '- Write a parser test and keep regex checks fast.'
+} >> "$R/agents/canon/fragments/codex.md"
+gen
+check "bare 'regex' and 'parser' keywords do not satisfy real-engine-tests" 1 "real-engine-tests"
 
 # --- Case 10: hand-edit to a generated file → currency fail ------------------
 new_repo
@@ -316,7 +345,7 @@ h2="$(cat "$R/claude/CLAUDE.md" "$R/codex/AGENTS.md" "$R/antigravity/GEMINI.md" 
 assert "running the generator twice changes nothing" $?
 
 # --- Case 18: the root AGENTS.md is a generator target -----------------------
-# ADR-0009's cloud-agent brief. It is built from fragments/jules.md, and it is
+# The cloud-agent brief. It is built from fragments/cloud.md, and it is
 # the ONLY target outside the RULES phrase list — so its enforcement rests
 # entirely on the currency check, which these two cases pin.
 new_repo
@@ -324,7 +353,7 @@ all_frags
 gen
 grep -qF -- '- One pull request per finding.' "$R/AGENTS.md" \
   && grep -qF -- 'GENERATED FILE' "$R/AGENTS.md"
-assert "root AGENTS.md is generated from fragments/jules.md with the banner" $?
+assert "root AGENTS.md is generated from fragments/cloud.md with the banner" $?
 
 new_repo
 all_frags
@@ -332,14 +361,14 @@ gen
 echo '- Sneaky hand-edited cloud rule.' >> "$R/AGENTS.md"
 check "hand-edit to the root AGENTS.md fails currency check" 1 "stale or hand-edited"
 
-# --- Case 19: a missing jules fragment fails generation ----------------------
+# --- Case 19: a missing cloud fragment fails generation ----------------------
 new_repo
 claude_frag
 gemini_frag
 codex_frag
 gen 2> /dev/null
-grep -q 'fragments/jules.md' "$R/gen.err"
-assert "a missing jules fragment fails generation by name" $?
+grep -q 'fragments/cloud.md' "$R/gen.err"
+assert "a missing cloud fragment fails generation by name" $?
 
 # --- Case 20: a huge stale diff must not abort the --check loop (#443) --------
 # The diff preview was `sed … | head -20`, which makes sed the pipe WRITER:

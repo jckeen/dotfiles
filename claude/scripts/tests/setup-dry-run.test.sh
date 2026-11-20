@@ -31,7 +31,7 @@ SETUP="$REPO_ROOT/setup.sh"
 export DOTFILES_ALLOW_LINKED_WORKTREE=1
 # The assertions below expect the all-services migration default; a
 # developer's own service selection (issue #425) must not leak in.
-unset XDG_CONFIG_HOME DOTFILES_SERVICES
+unset XDG_CONFIG_HOME DOTFILES_SERVICES CODEX_MEMORY_REPO AGY_MEMORY_REPO
 
 pass=0
 failed=0
@@ -89,8 +89,9 @@ ln -s "$REPO_ROOT/agents/skills/orchestrate/references/runtime-contracts.md" \
   "$TESTHOME/external-codex-skills/orchestrate/references/runtime-contracts.md"
 ln -s "$TESTHOME/external-codex-skills" "$TESTHOME/.codex/skills"
 
-# A Jules timer from before the ADR-0009 pause (#678): the update path runs
-# setup.sh, so setup.sh must disable it. Under --dry-run that is a preview only.
+# A Jules timer from before the lane was retired (ADR-0009, #678): the update
+# path runs setup.sh, so setup.sh must disable it and remove its unit files.
+# Under --dry-run that is a preview only.
 mkdir -p "$TESTHOME/.config/systemd/user"
 printf '[Timer]\nOnCalendar=daily\n' > "$TESTHOME/.config/systemd/user/jules-dispatch.timer"
 
@@ -114,16 +115,17 @@ else
 fi
 
 if command -v systemctl >/dev/null 2>&1; then
-  if grep -Fq "[DRY] systemctl --user disable --now jules-dispatch.timer" "$OUT"; then
-    ok "paused Jules lane: a pre-existing timer's disable is previewed in dry-run"
+  if grep -Fq "[DRY] systemctl --user disable --now jules-dispatch.timer" "$OUT" \
+    && grep -Fq "[DRY] rm -f $TESTHOME/.config/systemd/user/jules-dispatch.timer" "$OUT"; then
+    ok "retired Jules lane: a pre-existing timer's disable and removal are previewed in dry-run"
   else
-    fail "paused Jules lane: setup.sh did not disable a pre-existing jules-dispatch.timer"
+    fail "retired Jules lane: setup.sh did not disable and remove a pre-existing jules-dispatch.timer"
   fi
 else
   if ! grep -Fq "jules-dispatch.timer" "$OUT"; then
-    ok "paused Jules lane: no systemctl, so no timer step"
+    ok "retired Jules lane: no systemctl, so no timer step"
   else
-    fail "paused Jules lane: timer step ran without systemctl"
+    fail "retired Jules lane: timer step ran without systemctl"
   fi
 fi
 
@@ -155,6 +157,17 @@ if grep -q 'Checking Codex public-safe config' "$CHECK_OUT" \
   ok "setup.sh --check audits Codex and Antigravity as well as Claude"
 else
   fail "setup.sh --check is not a three-runtime audit"
+fi
+
+REPO_PARENT="$(dirname "$REPO_ROOT")"
+if grep -Fq "$DEV_ISO/claude-memory/bootstrap.sh" "$CHECK_OUT" \
+  && ! grep -Fq "$REPO_PARENT/claude-memory" "$OUT" \
+  && ! grep -Fq "$REPO_PARENT/agy-memory" "$OUT" \
+  && ! grep -Fq "$REPO_PARENT/claude-memory" "$CHECK_OUT" \
+  && ! grep -Fq "$REPO_PARENT/agy-memory" "$CHECK_OUT"; then
+  ok "DOTFILES_DEV_DIR kept setup.sh off sibling memory repos beside REPO_ROOT"
+else
+  fail "setup.sh reached sibling memory repos beside REPO_ROOT instead of DOTFILES_DEV_DIR"
 fi
 
 PATH="/usr/bin:/bin" HOME="$TESTHOME" CODEX_MEMORY_REPO="$TESTHOME/codex-memory" \
