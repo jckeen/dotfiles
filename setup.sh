@@ -215,26 +215,33 @@ run_health_audit() {
 
   echo ""
 
-  # ── Claude-memory symlinks (via bootstrap.sh --check) ──
+  # ── Claude-memory symlinks (via bootstrap.sh --check + memory-link check) ──
   echo "--- Claude-memory symlinks ---"
   if ! service_selected claude; then
     echo "  (Claude Code not selected — skipping claude-memory checks)"
-  elif [ -f "$BOOTSTRAP_SCRIPT" ]; then
-    if bash "$BOOTSTRAP_SCRIPT" --check; then
-      echo "  All claude-memory symlinks OK"
-    else
-      errors=$((errors + 1))
-      if [ "$mode" = "repair" ]; then
-        if [ "${DRY_RUN:-0}" = "1" ]; then
-          echo "  [DRY] would repair claude-memory symlinks via $BOOTSTRAP_SCRIPT"
-        else
-          echo "  Repairing claude-memory symlinks..."
-          bash "$BOOTSTRAP_SCRIPT" && echo "  Repaired." || echo "  Repair failed."
+  else
+    if [ -f "$BOOTSTRAP_SCRIPT" ]; then
+      if bash "$BOOTSTRAP_SCRIPT" --check; then
+        echo "  All claude-memory symlinks OK"
+      else
+        errors=$((errors + 1))
+        if [ "$mode" = "repair" ]; then
+          if [ "${DRY_RUN:-0}" = "1" ]; then
+            echo "  [DRY] would repair claude-memory symlinks via $BOOTSTRAP_SCRIPT"
+          else
+            echo "  Repairing claude-memory symlinks..."
+            bash "$BOOTSTRAP_SCRIPT" && echo "  Repaired." || echo "  Repair failed."
+          fi
         fi
       fi
+    else
+      echo "  (bootstrap.sh not found at $BOOTSTRAP_SCRIPT — skipping bootstrap.sh checks)"
     fi
-  else
-    echo "  (bootstrap.sh not found at $BOOTSTRAP_SCRIPT — skipping claude-memory checks)"
+    # Enforce project-memory symlink targets even when bootstrap.sh is absent (#701).
+    local ERRORS=0 WARNINGS=0
+    if ! check_claude_memory_links "$CHECKOUT_DEV_DIR" "$COMPANION_DEV_DIR" "$CLAUDE_DST"; then
+      errors=$((errors + ERRORS + WARNINGS))
+    fi
   fi
 
   echo ""

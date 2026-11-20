@@ -868,6 +868,24 @@ cct "$@"
         self.assertNotEqual(switched_launch.returncode, 0, switched_launch.stdout)
         self.assertIn("WRONG  memory ->", switched_launch.stdout)
 
+        for audit_flags in (["--check"], ["--repair"], ["--dry-run", "--repair"]):
+            setup_audit = subprocess.run(
+                ["bash", str(setup_repo / "setup.sh"), *audit_flags],
+                cwd=setup_repo,
+                env=switched_env,
+                text=True,
+                capture_output=True,
+                timeout=60,
+            )
+            self.assertNotEqual(setup_audit.returncode, 0, f"{audit_flags}: {setup_audit.stdout}")
+            self.assertIn("WRONG  memory ->", setup_audit.stdout)
+            self.assertIn("WRONG  memory (dotfiles) ->", setup_audit.stdout)
+        # --dry-run --repair must not alter the existing memory symlink target.
+        self.assertEqual(
+            (self.root / ".claude" / "projects" / f"-{munged}" / "memory").resolve(),
+            (companions / "claude-memory" / "dev" / "memory").resolve(),
+        )
+
         resync_setup = subprocess.run(
             ["bash", str(setup_repo / "setup.sh"), "--yes"],
             cwd=setup_repo,
@@ -900,6 +918,20 @@ cct "$@"
             timeout=60,
         )
         self.assertEqual(after_resync.returncode, 0, after_resync.stdout + after_resync.stderr)
+        for audit_flags in (["--check"], ["--repair"]):
+            setup_after = subprocess.run(
+                ["bash", str(setup_repo / "setup.sh"), *audit_flags],
+                cwd=setup_repo,
+                env=switched_env,
+                text=True,
+                capture_output=True,
+                timeout=60,
+            )
+            self.assertEqual(
+                setup_after.returncode,
+                0,
+                f"{audit_flags}: {setup_after.stdout + setup_after.stderr}",
+            )
 
 
 if __name__ == "__main__":

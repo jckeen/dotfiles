@@ -102,55 +102,13 @@ for root in "$CLAUDE_DST" "$CLAUDE_DST/skills"; do
   fi
 done
 
-# Memory repo check
+# Memory repo check (shared with setup.sh run_health_audit in lib-checks.sh)
 echo "Checking memory repo..."
 # Companion memory repo follows DOTFILES_DEV_DIR like setup.sh does (#701),
 # while the Claude project key stays anchored to the checkout's parent dev dir.
 CHECKOUT_DEV_DIR="$(dirname "$DOTFILES_DIR")"
-CHECKOUT_DEV_PREFIX="${CHECKOUT_DEV_DIR%/}"
 COMPANION_DEV_DIR="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
-MEMORY_REPO="${COMPANION_DEV_DIR%/}/claude-memory"
-MEMORY_PROJECT_DIR="$(echo "$CHECKOUT_DEV_DIR" | sed 's|^/||; s|/|-|g')"
-MEMORY_DST="$CLAUDE_DST/projects/-${MEMORY_PROJECT_DIR}/memory"
-MEMORY_SRC="$MEMORY_REPO/dev/memory"
-
-if [ -L "$MEMORY_DST" ]; then
-  _mem_target="$(readlink "$MEMORY_DST")"
-  if [ -d "$MEMORY_REPO" ] && [ "$_mem_target" != "$MEMORY_SRC" ]; then
-    red "WRONG  memory -> $_mem_target (expected $MEMORY_SRC — run setup.sh)"
-    ERRORS=$((ERRORS + 1))
-  elif [ ! -e "$MEMORY_DST" ]; then
-    red "BROKEN  memory -> $_mem_target (target missing)"
-    ERRORS=$((ERRORS + 1))
-  fi
-elif [ -d "$MEMORY_DST" ]; then
-  yellow "NOT LINKED  memory (exists as directory, not symlink — run setup.sh)"
-  WARNINGS=$((WARNINGS + 1))
-elif [ -d "$MEMORY_REPO" ]; then
-  yellow "MISSING  memory symlink (repo exists but not linked — run setup.sh)"
-  WARNINGS=$((WARNINGS + 1))
-fi
-
-if [ -d "$CLAUDE_DST/projects" ]; then
-  for _proj in "$CHECKOUT_DEV_PREFIX"/*/; do
-    [ -d "$_proj" ] || continue
-    _proj_name="$(basename "$_proj")"
-    [ "$_proj_name" = "claude-memory" ] && continue
-    _proj_munged="$(echo "${_proj%/}" | sed 's|^/||; s|/|-|g')"
-    _proj_dst="$CLAUDE_DST/projects/-${_proj_munged}/memory"
-    _proj_src="$MEMORY_REPO/$_proj_name/memory"
-    if [ -L "$_proj_dst" ]; then
-      _mem_target="$(readlink "$_proj_dst")"
-      if [ -d "$MEMORY_REPO" ] && [ "$_mem_target" != "$_proj_src" ]; then
-        red "WRONG  memory ($_proj_name) -> $_mem_target (expected $_proj_src — run setup.sh)"
-        ERRORS=$((ERRORS + 1))
-      elif [ ! -e "$_proj_dst" ]; then
-        red "BROKEN  memory ($_proj_name) -> $_mem_target (target missing)"
-        ERRORS=$((ERRORS + 1))
-      fi
-    fi
-  done
-fi
+check_claude_memory_links "$CHECKOUT_DEV_DIR" "$COMPANION_DEV_DIR" "$CLAUDE_DST" || true
 echo ""
 
 # Walk the whole claude/ tree from the shared enumerator (lib-symlinks.sh):
