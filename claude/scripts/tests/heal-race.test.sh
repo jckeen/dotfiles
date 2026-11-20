@@ -23,6 +23,7 @@ resolve_script_path() {
 }
 SCRIPT_DIR="$(resolve_script_path "${BASH_SOURCE[0]}")"
 REPO="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+unset DOTFILES_DEV_DIR
 
 pass=0
 failed=0
@@ -92,7 +93,9 @@ new_fixture() {
   SRC="$R/claude/skills/demo"
   DST="$H/.claude/skills/demo"
 }
-run_check() { HOME="$H" PATH="$TOOLS:$SYSBIN" "$R/check-claude.sh" "$@" 2>&1; }
+run_check() {
+  HOME="$H" DOTFILES_DEV_DIR="${R%/*}" PATH="$TOOLS:$SYSBIN" "$R/check-claude.sh" "$@" 2>&1
+}
 
 # ── 1. --heal on a fresh HOME links the bundle as one directory link ─────
 new_fixture fresh

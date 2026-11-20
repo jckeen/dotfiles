@@ -49,6 +49,7 @@ chmod +x "$SHIM_DIR/gitleaks"
 
 export HOME="$TEST_HOME"
 export PATH="$SHIM_DIR:/usr/bin:/bin"
+unset DOTFILES_DEV_DIR
 
 # shellcheck source=../../../.bash_aliases
 source "$REPO_ROOT/.bash_aliases"

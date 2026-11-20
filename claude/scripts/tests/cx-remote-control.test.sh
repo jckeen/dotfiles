@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # shellcheck source=../../../.bash_aliases
 source "$REPO_ROOT/.bash_aliases"
-unset CODEX_HOME
+unset CODEX_HOME DOTFILES_DEV_DIR AGY_MEMORY_REPO
 
 pass=0
 failed=0

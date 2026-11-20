@@ -32,7 +32,8 @@ class LauncherRegressions(unittest.TestCase):
             GIT_CONFIG_GLOBAL="/dev/null",
             GIT_CONFIG_SYSTEM="/dev/null",
         )
-        self.env.pop("TMUX", None)
+        for key in ("TMUX", "DOTFILES_DEV_DIR", "CODEX_MEMORY_REPO", "AGY_MEMORY_REPO"):
+            self.env.pop(key, None)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -76,6 +77,20 @@ _memory_path_is_publishable project/memory/authors.md || exit 1
 """,
             "zsh",
         )
+
+    def test_zsh_pull_all_with_empty_companion_dir(self):
+        if not shutil.which("zsh"):
+            self.skipTest("zsh is unavailable")
+        result = self.shell(
+            """set -u
+source "$ALIASES"
+mkdir -p "$FIXTURE/dev/dotfiles" "$FIXTURE/empty-companions"
+_dev_dir() { printf '%s\\n' "$FIXTURE/dev"; }
+DOTFILES_DEV_DIR="$FIXTURE/empty-companions" pull-all
+""",
+            "zsh",
+        )
+        self.assertEqual(result.stderr, "")
 
     def memory_fixture(self, name):
         home = self.root / name
@@ -618,6 +633,11 @@ cct "$@"
     def test_dotfiles_dev_dir_override_preserves_launcher_health_and_companion_lookup(self):
         installed_dev = self.root / "installed-dev"
         setup_repo = self.copy_setup_repo(installed_dev / "dotfiles", include_launchers=True)
+        # check-skill-refs.sh is an advisory `|| true` scanner covered by its own
+        # suite and adds ~11s per check-claude.sh invocation once settings.json exists.
+        skill_refs_stub = setup_repo / "claude" / "scripts" / "check-skill-refs.sh"
+        skill_refs_stub.write_text("#!/bin/sh\nexit 0\n")
+        skill_refs_stub.chmod(0o755)
         subprocess.run(
             ["git", "-C", str(setup_repo), "init", "-q", "-b", "main"],
             check=True,
@@ -648,6 +668,10 @@ cct "$@"
         companions = self.root / "companions"
         (companions / "claude-memory" / "dev" / "memory").mkdir(parents=True)
         (companions / "claude-memory" / "dev" / "memory" / "MEMORY.md").write_text("# comp\n")
+        (companions / "claude-memory" / "dotfiles" / "memory").mkdir(parents=True)
+        (companions / "claude-memory" / "dotfiles" / "memory" / "MEMORY.md").write_text(
+            "# comp dotfiles\n"
+        )
         (companions / "codex-memory").mkdir(parents=True)
         (companions / "codex-memory" / "AGENTS.local.md").write_text("# comp codex\n")
         (companions / "codex-memory" / "bootstrap.sh").write_text(
@@ -804,6 +828,78 @@ cct "$@"
             0,
             no_override_check.stdout + no_override_check.stderr,
         )
+
+        # Switching DOTFILES_DEV_DIR to a second populated companion repo while the
+        # first still exists on disk must fail check-claude.sh (and launcher health)
+        # with WRONG memory target errors until setup.sh re-links them.
+        companions2 = self.root / "companions2"
+        (companions2 / "claude-memory" / "dev" / "memory").mkdir(parents=True)
+        (companions2 / "claude-memory" / "dev" / "memory" / "MEMORY.md").write_text("# comp2\n")
+        (companions2 / "claude-memory" / "dotfiles" / "memory").mkdir(parents=True)
+        (companions2 / "claude-memory" / "dotfiles" / "memory" / "MEMORY.md").write_text(
+            "# comp2 dotfiles\n"
+        )
+        switched_env = dict(test_env, DOTFILES_DEV_DIR=str(companions2))
+        switched_direct = subprocess.run(
+            ["bash", str(setup_repo / "check-claude.sh")],
+            cwd=self.root,
+            env=switched_env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertNotEqual(switched_direct.returncode, 0, switched_direct.stdout)
+        self.assertIn("WRONG  memory ->", switched_direct.stdout)
+        self.assertIn("WRONG  memory (dotfiles) ->", switched_direct.stdout)
+
+        switched_launch = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"source {shlex.quote(str(self.root / '.bash_aliases'))} && "
+                "_check_claude_launch_health",
+            ],
+            cwd=self.root,
+            env=switched_env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertNotEqual(switched_launch.returncode, 0, switched_launch.stdout)
+        self.assertIn("WRONG  memory ->", switched_launch.stdout)
+
+        resync_setup = subprocess.run(
+            ["bash", str(setup_repo / "setup.sh"), "--yes"],
+            cwd=setup_repo,
+            env=switched_env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertEqual(resync_setup.returncode, 0, resync_setup.stdout + resync_setup.stderr)
+        dotfiles_munged = str(setup_repo).lstrip("/").replace("/", "-")
+        self.assertEqual(
+            (self.root / ".claude" / "projects" / f"-{munged}" / "memory").resolve(),
+            (companions2 / "claude-memory" / "dev" / "memory").resolve(),
+        )
+        self.assertEqual(
+            (self.root / ".claude" / "projects" / f"-{dotfiles_munged}" / "memory").resolve(),
+            (companions2 / "claude-memory" / "dotfiles" / "memory").resolve(),
+        )
+        after_resync = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"source {shlex.quote(str(self.root / '.bash_aliases'))} && "
+                "_check_claude_launch_health",
+            ],
+            cwd=self.root,
+            env=switched_env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertEqual(after_resync.returncode, 0, after_resync.stdout + after_resync.stderr)
 
 
 if __name__ == "__main__":

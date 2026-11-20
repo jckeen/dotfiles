@@ -124,6 +124,69 @@ _pull_all_upstream_deleted() {
   [ "$rc" -eq 2 ]
 }
 
+# Sync a single repository (ordinary checkout or linked worktree).
+# Returns 0 on success/skip, 1 on failure (recording diagnostics in _pull_all_failures).
+_pull_all_sync_repo() {
+  local repo="$1"
+  [ -e "$repo/.git" ] || [ -L "$repo/.git" ] || return 0
+  local name remote_output upstream output rc
+  name="$(basename "$repo")"
+  if ! output="$(git -C "$repo" rev-parse --is-inside-work-tree 2>&1)"; then
+    _pull_all_failure "$name" "$(tail -1 <<< "$output")"
+    return 1
+  fi
+  if ! remote_output="$(git -C "$repo" remote -v 2>&1)"; then
+    _pull_all_failure "$name" "$(tail -1 <<< "$remote_output")"
+    return 1
+  fi
+  [ -n "$remote_output" ] || return 0
+  upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" \
+    || upstream=""
+  rc=0
+  _pull_all_is_linked_worktree "$repo" || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    _pull_all_failure "$name" "Cannot resolve Git worktree layout; not pulled"
+    return 1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    rc=0
+    # Detached or upstream-less linked worktrees still fetch their default
+    # remote; nothing here ever moves HEAD, the index, or the files.
+    output="$(git -C "$repo" fetch --prune 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      _pull_all_report "$name" \
+        "Fetched only (linked worktree${upstream:+ tracking $upstream}; not pulled)"
+      return 0
+    else
+      _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
+      return 1
+    fi
+  fi
+  if [ -z "$upstream" ]; then
+    _pull_all_report "$name" "No upstream branch; skipped"
+    return 0
+  fi
+  rc=0
+  # --prune: a branch deleted on origin (delete-on-merge after its PR lands)
+  # leaves a stale remote-tracking ref that makes every plain pull fail with
+  # "no such ref was fetched" until something prunes it — which used to be
+  # only the daily git-hygiene timer, so launches failed until the next
+  # morning and then silently worked again.
+  output="$(git -C "$repo" pull --ff-only --prune 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    _pull_all_report "$name" "$(tail -1 <<< "$output")"
+    return 0
+  elif grep -q 'no such ref was fetched' <<< "$output" \
+    && _pull_all_upstream_deleted "$repo"; then
+    _pull_all_report "$name" \
+      "Upstream branch deleted on origin ($upstream); skipped — switch to the default branch"
+    return 0
+  else
+    _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
+    return 1
+  fi
+}
+
 # Linked worktrees may belong to another session, so only fetch into their
 # shared repository. Keep sync sequential because linked worktrees share refs
 # and objects. Preserve failures for callers that continue after a failed sync.
@@ -135,67 +198,43 @@ pull-all() {
     echo "Dev directory not found: $dev_dir"
     return 1
   fi
-  local failed=0 remote_output upstream output
-  local repo name rc
+  local failed=0 repo seen already_synced companion_dev_dir companion_prefix
+  local -a synced_repos=() companion_repos=()
   for repo in "$dev_dir"/*/; do
     [ -e "$repo/.git" ] || [ -L "$repo/.git" ] || continue
-    name="$(basename "$repo")"
-    if ! output="$(git -C "$repo" rev-parse --is-inside-work-tree 2>&1)"; then
-      failed=1
-      _pull_all_failure "$name" "$(tail -1 <<< "$output")"
-      continue
-    fi
-    if ! remote_output="$(git -C "$repo" remote -v 2>&1)"; then
-      failed=1
-      _pull_all_failure "$name" "$(tail -1 <<< "$remote_output")"
-      continue
-    fi
-    [ -n "$remote_output" ] || continue
-    upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" \
-      || upstream=""
-    rc=0
-    _pull_all_is_linked_worktree "$repo" || rc=$?
-    if [ "$rc" -gt 1 ]; then
-      failed=1
-      _pull_all_failure "$name" "Cannot resolve Git worktree layout; not pulled"
-      continue
-    fi
-    if [ "$rc" -eq 0 ]; then
-      rc=0
-      # Detached or upstream-less linked worktrees still fetch their default
-      # remote; nothing here ever moves HEAD, the index, or the files.
-      output="$(git -C "$repo" fetch --prune 2>&1)" || rc=$?
-      if [ "$rc" -eq 0 ]; then
-        _pull_all_report "$name" \
-          "Fetched only (linked worktree${upstream:+ tracking $upstream}; not pulled)"
-      else
-        failed=1
-        _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
-      fi
-      continue
-    fi
-    if [ -z "$upstream" ]; then
-      _pull_all_report "$name" "No upstream branch; skipped"
-      continue
-    fi
-    rc=0
-    # --prune: a branch deleted on origin (delete-on-merge after its PR lands)
-    # leaves a stale remote-tracking ref that makes every plain pull fail with
-    # "no such ref was fetched" until something prunes it — which used to be
-    # only the daily git-hygiene timer, so launches failed until the next
-    # morning and then silently worked again.
-    output="$(git -C "$repo" pull --ff-only --prune 2>&1)" || rc=$?
-    if [ "$rc" -eq 0 ]; then
-      _pull_all_report "$name" "$(tail -1 <<< "$output")"
-    elif grep -q 'no such ref was fetched' <<< "$output" \
-      && _pull_all_upstream_deleted "$repo"; then
-      _pull_all_report "$name" \
-        "Upstream branch deleted on origin ($upstream); skipped — switch to the default branch"
-    else
-      failed=1
-      _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
-    fi
+    synced_repos+=("$repo")
+    _pull_all_sync_repo "$repo" || failed=1
   done
+  if ! companion_dev_dir="$(_companion_dev_dir)"; then
+    failed=1
+    _pull_all_failure "DOTFILES_DEV_DIR" "Invalid DOTFILES_DEV_DIR (must be an absolute single-line path)"
+  else
+    companion_prefix="${companion_dev_dir%/}"
+    companion_repos=(
+      "$companion_prefix/claude-memory"
+      "${CODEX_MEMORY_REPO:-$companion_prefix/codex-memory}"
+      "${AGY_MEMORY_REPO:-$companion_prefix/agy-memory}"
+    )
+    for repo in "${companion_repos[@]}"; do
+      while [ "$repo" != "/" ] && [ "${repo%/}" != "$repo" ]; do
+        repo="${repo%/}"
+      done
+      [ -d "$repo" ] || continue
+      [ -e "$repo/.git" ] || [ -L "$repo/.git" ] || continue
+      already_synced=0
+      if [ "${#synced_repos[@]}" -gt 0 ]; then
+        for seen in "${synced_repos[@]}"; do
+          if [ "$seen" -ef "$repo" ]; then
+            already_synced=1
+            break
+          fi
+        done
+      fi
+      [ "$already_synced" -eq 0 ] || continue
+      synced_repos+=("$repo")
+      _pull_all_sync_repo "$repo" || failed=1
+    done
+  fi
   return "$failed"
 }
 

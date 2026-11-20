@@ -46,6 +46,17 @@ def snapshot(root):
     return result
 
 
+def _checker_env(base, home):
+    """Build an isolated subprocess environment for health-checker fixtures."""
+    return {
+        **os.environ,
+        "HOME": str(home),
+        "DOTFILES_DEV_DIR": str(base / "no-dev"),
+        "CODEX_MEMORY_REPO": str(base / "no-memory"),
+        "AGY_MEMORY_REPO": str(base / "no-memory"),
+    }
+
+
 def load_retirement_helper(repo):
     spec = importlib.util.spec_from_file_location(
         "retirement", repo / "claude/scripts/retired-skill-links.py"
@@ -97,12 +108,7 @@ def fixture(runtime):
         def run(*args):
             return subprocess.run(
                 ["bash", str(repo / f"check-{runtime}.sh"), *args],
-                env={
-                    **os.environ,
-                    "HOME": str(home),
-                    "CODEX_MEMORY_REPO": str(base / "no-memory"),
-                    "AGY_MEMORY_REPO": str(base / "no-memory"),
-                },
+                env=_checker_env(base, home),
                 text=True,
                 capture_output=True,
                 timeout=15,
@@ -302,7 +308,7 @@ class RetirementTests(unittest.TestCase):
                 try:
                     subprocess.run(
                         ["bash", str(repo / f"check-{runtime}.sh"), "--heal", "--strict"],
-                        env={**os.environ, "HOME": home.name},
+                        env=_checker_env(repo.parent, home.name),
                         cwd=home.parent,
                         capture_output=True,
                         text=True,
@@ -463,12 +469,7 @@ class RetirementTests(unittest.TestCase):
                     before = snapshot(home)
                     subprocess.run(
                         ["bash", str(command_repo / f"check-{runtime}.sh"), "--heal", "--strict"],
-                        env={
-                            **os.environ,
-                            "HOME": str(command_home),
-                            "CODEX_MEMORY_REPO": str(repo.parent / "no-memory"),
-                            "AGY_MEMORY_REPO": str(repo.parent / "no-memory"),
-                        },
+                        env=_checker_env(repo.parent, command_home),
                         text=True,
                         capture_output=True,
                         timeout=3,
