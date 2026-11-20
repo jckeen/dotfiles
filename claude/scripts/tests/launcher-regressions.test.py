@@ -546,11 +546,16 @@ cct "$@"
                         finally:
                             tmux("kill-server")
 
-    def copy_setup_repo(self, destination):
+    def copy_setup_repo(self, destination, include_launchers=False):
         destination.mkdir(parents=True)
         for source in REPO.glob("*.sh"):
             shutil.copy2(source, destination / source.name)
         shutil.copy2(REPO / ".tmux.conf", destination / ".tmux.conf")
+        if include_launchers:
+            for name in (".bash_aliases", ".bash_profile", ".gitconfig", "rc-start"):
+                src = REPO / name
+                if src.exists():
+                    shutil.copy2(src, destination / name)
         for name in ("claude", "codex", "agents", "antigravity"):
             shutil.copytree(
                 REPO / name,
@@ -609,6 +614,196 @@ cct "$@"
             )
             self.assertTrue(destination.is_symlink())
             self.assertEqual(destination.resolve(), setup_repo / ".tmux.conf")
+
+    def test_dotfiles_dev_dir_override_preserves_launcher_health_and_companion_lookup(self):
+        installed_dev = self.root / "installed-dev"
+        setup_repo = self.copy_setup_repo(installed_dev / "dotfiles", include_launchers=True)
+        subprocess.run(
+            ["git", "-C", str(setup_repo), "init", "-q", "-b", "main"],
+            check=True,
+            env=self.env,
+        )
+        subprocess.run(
+            ["git", "-C", str(setup_repo), "config", "user.name", "Test User"],
+            check=True,
+            env=self.env,
+        )
+        subprocess.run(
+            ["git", "-C", str(setup_repo), "config", "user.email", "test@example.com"],
+            check=True,
+            env=self.env,
+        )
+        subprocess.run(
+            ["git", "-C", str(setup_repo), "add", "-A"],
+            check=True,
+            env=self.env,
+        )
+        subprocess.run(
+            ["git", "-C", str(setup_repo), "commit", "-qm", "fixture"],
+            check=True,
+            env=self.env,
+        )
+
+        # Companion directory deliberately has NO dotfiles/ checkout inside it.
+        companions = self.root / "companions"
+        (companions / "claude-memory" / "dev" / "memory").mkdir(parents=True)
+        (companions / "claude-memory" / "dev" / "memory" / "MEMORY.md").write_text("# comp\n")
+        (companions / "codex-memory").mkdir(parents=True)
+        (companions / "codex-memory" / "AGENTS.local.md").write_text("# comp codex\n")
+        (companions / "codex-memory" / "bootstrap.sh").write_text(
+            '#!/bin/sh\necho comp >> "$HOME/comp-codex-boot"\n'
+        )
+        (companions / "codex-memory" / "bootstrap.sh").chmod(0o755)
+        (companions / "agy-memory").mkdir(parents=True)
+        (companions / "agy-memory" / "GEMINI.local.md").write_text("# comp agy\n")
+        (companions / "agy-memory" / "bootstrap.sh").write_text(
+            '#!/bin/sh\necho comp >> "$HOME/comp-agy-boot"\n'
+        )
+        (companions / "agy-memory" / "bootstrap.sh").chmod(0o755)
+
+        # Rival sibling memory repos beside the installed checkout must be ignored.
+        (installed_dev / "codex-memory").mkdir(parents=True)
+        (installed_dev / "codex-memory" / "AGENTS.local.md").write_text("# rival codex\n")
+        (installed_dev / "codex-memory" / "bootstrap.sh").write_text(
+            '#!/bin/sh\necho rival >> "$HOME/rival-codex-boot"\n'
+        )
+        (installed_dev / "codex-memory" / "bootstrap.sh").chmod(0o755)
+        (installed_dev / "agy-memory").mkdir(parents=True)
+        (installed_dev / "agy-memory" / "GEMINI.local.md").write_text("# rival agy\n")
+
+        stubs = self.root / "stubs"
+        stubs.mkdir()
+        stub_scripts = {
+            "claude": (
+                "#!/bin/sh\n"
+                'if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "list" ]; then\n'
+                '  printf "claude-plugins-official\\nskills\\ncodex-plugin-cc\\nsoundcheck\\n"\n'
+                "fi\n"
+                "exit 0\n"
+            ),
+            "node": "#!/bin/sh\necho v24.0.0\n",
+            "gh": "#!/bin/sh\nexit 0\n",
+        }
+        for tool in (
+            "sudo",
+            "apt",
+            "apt-get",
+            "brew",
+            "curl",
+            "systemctl",
+            "gitleaks",
+            "npm",
+            "bun",
+            "codex",
+            "agy",
+            "tmux",
+        ):
+            stub_scripts[tool] = "#!/bin/sh\nexit 0\n"
+        for tool, content in stub_scripts.items():
+            p = stubs / tool
+            p.write_text(content)
+            p.chmod(0o755)
+
+        test_env = dict(
+            self.env,
+            PATH=f"{stubs}{os.pathsep}{os.environ['PATH']}",
+            DOTFILES_DEV_DIR=str(companions),
+            DOTFILES_SERVICES="claude,codex,antigravity",
+            XDG_CONFIG_HOME=str(self.root / ".config"),
+            GIT_NAME="Test User",
+            GIT_EMAIL="test@example.com",
+            TMUX_TMPDIR=str(self.root / "tmux-iso"),
+        )
+        (self.root / "tmux-iso").mkdir()
+        for key in (
+            "DOTFILES_ALLOW_LINKED_WORKTREE",
+            "CODEX_MEMORY_REPO",
+            "AGY_MEMORY_REPO",
+            "CLAUDE_CONFIG_DIR",
+            "_DEV_DIR_CACHE",
+        ):
+            test_env.pop(key, None)
+
+        setup_run = subprocess.run(
+            ["bash", str(setup_repo / "setup.sh"), "--yes"],
+            cwd=setup_repo,
+            env=test_env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertEqual(setup_run.returncode, 0, setup_run.stdout + setup_run.stderr)
+
+        # Persisted ~/.claude/dev-dir keeps the checkout parent, never the companion dir.
+        self.assertEqual(
+            (self.root / ".claude" / "dev-dir").read_text().strip(),
+            str(installed_dev),
+        )
+        self.assertEqual(
+            (self.root / ".codex" / "AGENTS.local.md").resolve(),
+            (companions / "codex-memory" / "AGENTS.local.md").resolve(),
+        )
+        self.assertEqual(
+            (self.root / ".gemini" / "config" / "GEMINI.local.md").resolve(),
+            (companions / "agy-memory" / "GEMINI.local.md").resolve(),
+        )
+        munged = str(installed_dev).lstrip("/").replace("/", "-")
+        self.assertEqual(
+            (self.root / ".claude" / "projects" / f"-{munged}" / "memory").resolve(),
+            (companions / "claude-memory" / "dev" / "memory").resolve(),
+        )
+        self.assertTrue((self.root / "comp-codex-boot").exists())
+        self.assertTrue((self.root / "comp-agy-boot").exists())
+        self.assertFalse((self.root / "rival-codex-boot").exists())
+
+        # Launcher health wrappers read ~/.claude/dev-dir -> installed_dev/dotfiles and pass.
+        launch_check = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"source {shlex.quote(str(self.root / '.bash_aliases'))} && "
+                'test "$(_dev_dir)" = ' + shlex.quote(str(installed_dev)) + " && "
+                'test "$(_companion_dev_dir)" = ' + shlex.quote(str(companions)) + " && "
+                "_check_claude_launch_health && "
+                "_check_codex_launch_health && "
+                "_check_antigravity_launch_health",
+            ],
+            cwd=self.root,
+            env=test_env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertEqual(launch_check.returncode, 0, launch_check.stdout + launch_check.stderr)
+
+        # Without DOTFILES_DEV_DIR exported in a new shell, checkers still run
+        # from installed_dev/dotfiles (never 127 looking inside companions/).
+        shutil.rmtree(installed_dev / "codex-memory")
+        shutil.rmtree(installed_dev / "agy-memory")
+        no_override_env = dict(test_env)
+        no_override_env.pop("DOTFILES_DEV_DIR", None)
+        no_override_check = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"source {shlex.quote(str(self.root / '.bash_aliases'))} && "
+                'test "$(_dev_dir)" = ' + shlex.quote(str(installed_dev)) + " && "
+                'test -f "$(_dev_dir)/dotfiles/setup.sh" && '
+                "_check_claude_launch_health && "
+                "_check_codex_launch_health && "
+                "_check_antigravity_launch_health",
+            ],
+            cwd=self.root,
+            env=no_override_env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertEqual(
+            no_override_check.returncode,
+            0,
+            no_override_check.stdout + no_override_check.stderr,
+        )
 
 
 if __name__ == "__main__":

@@ -104,10 +104,12 @@ done
 
 # Memory repo check
 echo "Checking memory repo..."
-# The dev dir follows DOTFILES_DEV_DIR like setup.sh does (#701).
-DEV_DIR="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
-MEMORY_REPO="${DEV_DIR%/}/claude-memory"
-MEMORY_PROJECT_DIR="$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
+# Companion memory repo follows DOTFILES_DEV_DIR like setup.sh does (#701),
+# while the Claude project key stays anchored to the checkout's parent dev dir.
+CHECKOUT_DEV_DIR="$(dirname "$DOTFILES_DIR")"
+COMPANION_DEV_DIR="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
+MEMORY_REPO="${COMPANION_DEV_DIR%/}/claude-memory"
+MEMORY_PROJECT_DIR="$(echo "$CHECKOUT_DEV_DIR" | sed 's|^/||; s|/|-|g')"
 MEMORY_DST="$CLAUDE_DST/projects/-${MEMORY_PROJECT_DIR}/memory"
 
 if [ -L "$MEMORY_DST" ]; then

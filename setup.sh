@@ -78,17 +78,18 @@ fi
 # shellcheck source=lib-checks.sh
 source "$DOTFILES_DIR/lib-checks.sh"
 
-# Dev dir: DOTFILES_DEV_DIR when set, else the checkout's parent. Defined
-# early so it can be used throughout (was previously set mid-script, which
-# broke any earlier reference — e.g. safe.directory ending up as
-# "/claude-memory"). Namespaced, not DEV_DIR, because DEV_DIR is a common
-# ambient variable in unrelated shells.
-DEV_DIR="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
-DEV_DIR_PREFIX="${DEV_DIR%/}"
+# Checkout parent dir: where this dotfiles checkout (and project repos) live.
+# Always persisted to ~/.claude/dev-dir so launchers (cc/cx/agy) and
+# dotfiles-update keep finding <dev-dir>/dotfiles even when DOTFILES_DEV_DIR
+# redirects companion memory repos elsewhere (#701).
+CHECKOUT_DEV_DIR="$(dirname "$DOTFILES_DIR")"
+CHECKOUT_DEV_PREFIX="${CHECKOUT_DEV_DIR%/}"
+# Companion repo root: DOTFILES_DEV_DIR when set, else CHECKOUT_DEV_DIR.
+# Namespaced, not DEV_DIR, because DEV_DIR is a common ambient variable.
+COMPANION_DEV_DIR="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
+COMPANION_DEV_PREFIX="${COMPANION_DEV_DIR%/}"
 # Private companion repo (settings.json + identity + auto-memory). Optional.
-# Derived from DEV_DIR (not hardcoded ~/dev) so a checkout under ~/code etc.
-# still finds its sibling claude-memory repo.
-BOOTSTRAP_SCRIPT="$DEV_DIR_PREFIX/claude-memory/bootstrap.sh"
+BOOTSTRAP_SCRIPT="$COMPANION_DEV_PREFIX/claude-memory/bootstrap.sh"
 
 # Agent-service selection (issue #425): which of Claude Code, Codex, and
 # Antigravity this machine installs, links, and health-checks. Parsing,
@@ -1921,13 +1922,12 @@ GITCONF
   fi
 
   # WSL-specific: mark dev repos as safe (idempotent — skip if already present).
-  # DEV_DIR is defined at the top of this script (C1 fix); reusing it here.
   # Write to .gitconfig.local, NOT --global: ~/.gitconfig is symlinked to this
   # repo's tracked .gitconfig, so `git config --global` would commit machine paths
   # (e.g. /home/<you>/dev/dotfiles) into the public repo. Same reasoning as the
   # gh credential-helper block below.
   if [[ "$PLATFORM" == "wsl" ]]; then
-    for _safe_dir in "$DOTFILES_DIR" "$DEV_DIR_PREFIX/claude-memory"; do
+    for _safe_dir in "$DOTFILES_DIR" "$COMPANION_DEV_PREFIX/claude-memory"; do
       git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null \
         | grep -Fxq "$_safe_dir" \
         || git config --file "$DOTFILES_DIR/.gitconfig.local" --add safe.directory "$_safe_dir"
@@ -2024,13 +2024,14 @@ else
   echo "  -> Shared scripts linked ($_tree_links entries)"
 fi
 
-# Dev dir already derived at top of script (C1) — write it out so all scripts
-# have a single source of truth.
+# Persist the checkout's parent dev dir so launchers and dotfiles-update always
+# find <dev-dir>/dotfiles, even when DOTFILES_DEV_DIR points companion repos
+# elsewhere (#701).
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  echo "  [DRY] would write $HOME_DIR/.claude/dev-dir ($DEV_DIR)"
+  echo "  [DRY] would write $HOME_DIR/.claude/dev-dir ($CHECKOUT_DEV_DIR)"
 else
-  echo "$DEV_DIR" > "$HOME_DIR/.claude/dev-dir"
-  echo "  -> dev-dir set to $DEV_DIR"
+  echo "$CHECKOUT_DEV_DIR" > "$HOME_DIR/.claude/dev-dir"
+  echo "  -> dev-dir set to $CHECKOUT_DEV_DIR"
 fi
 
 # Memory (optional private repo for persistent Claude memory)
@@ -2044,7 +2045,7 @@ fi
 # claude-memory/<project-basename>/memory, so durable facts are version-
 # controlled and synced. The source of truth lives in the repo; the symlink
 # points Claude at it.
-MEMORY_REPO="$DEV_DIR_PREFIX/claude-memory"
+MEMORY_REPO="$COMPANION_DEV_PREFIX/claude-memory"
 if ! service_selected claude; then
   echo "  -> Claude Code not selected: skipping Claude memory links (existing links left as-is)"
 elif [ -d "$MEMORY_REPO" ]; then
@@ -2074,9 +2075,11 @@ elif [ -d "$MEMORY_REPO" ]; then
     fi
     ln -sn "$src" "$dst"
   }
-  # The dev root itself (basename "dev"), then every immediate project under it.
-  link_project_memory "dev" "$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
-  for _proj in "$DEV_DIR_PREFIX"/*/; do
+  # The dev root holding projects/dotfiles (key "dev"), then every immediate
+  # project under it. Anchored to CHECKOUT_DEV_DIR so DOTFILES_DEV_DIR only
+  # relocates companion memory storage, not the project tree keys (#701).
+  link_project_memory "dev" "$(echo "$CHECKOUT_DEV_DIR" | sed 's|^/||; s|/|-|g')"
+  for _proj in "$CHECKOUT_DEV_PREFIX"/*/; do
     [ -d "$_proj" ] || continue
     [ "$(basename "$_proj")" = "claude-memory" ] && continue  # the repo itself
     link_project_memory "$(basename "$_proj")" \
@@ -2170,9 +2173,9 @@ if service_selected codex; then
     echo "  -> Codex skills linked into ~/.agents/skills (legacy ~/.codex links retained for compatibility)"
   fi
 
-  # Sibling of the dev directory, like claude-memory, so DOTFILES_DEV_DIR
-  # redirects this lookup too (#701); the explicit override still wins.
-  CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$DEV_DIR_PREFIX/codex-memory}"
+  # Companion repo lookup: DOTFILES_DEV_DIR redirects this too (#701); an
+  # explicit CODEX_MEMORY_REPO still wins.
+  CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$COMPANION_DEV_PREFIX/codex-memory}"
   if [ -d "$CODEX_MEMORY_REPO" ]; then
     echo "  -> codex-memory private repo detected at $CODEX_MEMORY_REPO"
     if [ -f "$CODEX_MEMORY_REPO/bootstrap.sh" ]; then
@@ -2267,9 +2270,9 @@ if service_selected antigravity; then
     echo "  -> Antigravity hooks.json linked"
   fi
 
-  # Sibling of the dev directory, so DOTFILES_DEV_DIR redirects it and its
-  # permissions overlay too (#701); the explicit override still wins.
-  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$DEV_DIR_PREFIX/agy-memory}"
+  # Companion repo lookup: DOTFILES_DEV_DIR redirects it and its permissions
+  # overlay too (#701); an explicit AGY_MEMORY_REPO still wins.
+  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$COMPANION_DEV_PREFIX/agy-memory}"
 
   # Permission baseline: curated allow/ask/deny rules plus proceed-in-sandbox
   # mode, merged into the machine-local ~/.gemini/antigravity-cli/settings.json
@@ -2673,7 +2676,7 @@ if [[ "$PLATFORM" == "wsl" ]]; then
   echo "  3. Add project repos to git safe.directory as needed (write to"
   echo "     .gitconfig.local, NOT --global: ~/.gitconfig is symlinked to the"
   echo "     public dotfiles repo, so --global would commit your machine path):"
-  echo "     git config --file ~/.gitconfig.local --add safe.directory $DEV_DIR/<repo>"
+  echo "     git config --file ~/.gitconfig.local --add safe.directory $CHECKOUT_DEV_DIR/<repo>"
 fi
 
 # ─── Final completion summary (M5) ───────────────────────────────────

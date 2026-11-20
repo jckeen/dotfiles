@@ -1,5 +1,5 @@
-## 2026-11-20 — fix(setup): setup test suites and checkers honour DOTFILES_DEV_DIR (#701)
+## 2026-11-20 — fix(setup): setup test suites, checkers, and launchers honour DOTFILES_DEV_DIR (#701)
 
 - **lib-checks.sh**: adds `dotfiles_dev_dir` so `setup.sh` and the three runtime checkers (`check-claude.sh`, `check-codex.sh`, `check-antigravity.sh`) honour an absolute, single-line `DOTFILES_DEV_DIR` (trimming trailing slashes while keeping `/`) before falling back to the checkout parent.
-- **setup.sh & health checkers**: route `claude-memory`, `codex-memory`, `agy-memory`, and `agy-memory/permissions.local.json` through `dotfiles_dev_dir` while preserving explicit `CODEX_MEMORY_REPO` and `AGY_MEMORY_REPO` overrides.
-- **Test suites**: `setup-services`, `setup-dry-run`, and `setup-fuzz-layouts` isolate `DOTFILES_DEV_DIR` under their test roots with behavioral guard assertions against fake planted siblings and host sibling paths.
+- **setup.sh, health checkers & `.bash_aliases`**: separate installed checkout discovery (`~/.claude/dev-dir`, `_dev_dir`, and Claude project memory keys anchored to the checkout parent) from companion memory-repo lookup (`claude-memory`, `codex-memory`, `agy-memory`, `agy-memory/permissions.local.json`, and `_companion_dev_dir`), preserving explicit `CODEX_MEMORY_REPO` and `AGY_MEMORY_REPO` overrides.
+- **Test suites**: `setup-services`, `setup-dry-run`, `setup-fuzz-layouts`, and `launcher-regressions` verify checkout-vs-companion separation, install-to-launch health wrapper execution when the override dir lacks `dotfiles/`, and isolation against fake planted siblings and host sibling paths.

@@ -52,6 +52,34 @@ _dev_dir() {
   printf '%s\n' "$_DEV_DIR_CACHE"
 }
 
+# Companion memory repo root (claude-memory, codex-memory, agy-memory).
+# Mirrors dotfiles_dev_dir in lib-checks.sh (#701): honours an explicit
+# DOTFILES_DEV_DIR without altering _dev_dir() (which locates the installed
+# dotfiles checkout and project repos).
+_companion_dev_dir() {
+  if [ -n "${DOTFILES_DEV_DIR:-}" ]; then
+    case "$DOTFILES_DEV_DIR" in
+      *$'\n'*)
+        echo "ERROR: DOTFILES_DEV_DIR must not contain newlines" >&2
+        return 1
+        ;;
+      /*)
+        local d="$DOTFILES_DEV_DIR"
+        while [ "$d" != "/" ] && [ "${d%/}" != "$d" ]; do
+          d="${d%/}"
+        done
+        printf '%s\n' "$d"
+        ;;
+      *)
+        echo "ERROR: DOTFILES_DEV_DIR must be an absolute path (got: $DOTFILES_DEV_DIR)" >&2
+        return 1
+        ;;
+    esac
+  else
+    _dev_dir
+  fi
+}
+
 _pull_all_report() {
   printf '  %-20s  %s\n' "$1" "$2"
 }
@@ -390,8 +418,8 @@ _memory_snapshot_upstream() {
 
 sync-memory() {
   local dev_dir
-  dev_dir="$(_dev_dir)"
-  local mem_repo="$dev_dir/claude-memory"
+  dev_dir="$(_companion_dev_dir)" || return 1
+  local mem_repo="${dev_dir%/}/claude-memory"
   if [ ! -e "$mem_repo/.git" ] && [ ! -L "$mem_repo/.git" ]; then
     return 0
   fi
@@ -521,8 +549,10 @@ _check_critical_symlinks() {
   done
   if [ "$broken" -eq 1 ]; then
     echo "Critical symlinks broken — attempting auto-repair..."
-    if [ -f "$(_dev_dir)/claude-memory/bootstrap.sh" ]; then
-      bash "$(_dev_dir)/claude-memory/bootstrap.sh" && echo "Repair complete." || echo "Repair failed — run bootstrap.sh manually."
+    local companion_dir=""
+    companion_dir="$(_companion_dev_dir)" || companion_dir=""
+    if [ -n "$companion_dir" ] && [ -f "${companion_dir%/}/claude-memory/bootstrap.sh" ]; then
+      bash "${companion_dir%/}/claude-memory/bootstrap.sh" && echo "Repair complete." || echo "Repair failed — run bootstrap.sh manually."
     elif [ -f "$(_dev_dir)/dotfiles/setup.sh" ]; then
       bash "$(_dev_dir)/dotfiles/setup.sh" --repair && echo "Repair complete." || echo "Repair failed — run setup.sh --repair manually."
     else
@@ -944,8 +974,13 @@ cx() {
 
   # Reapply portable private defaults after the repo sync without replacing the
   # machine-local config that holds project trust and integration settings.
-  local codex_memory_bootstrap
-  codex_memory_bootstrap="${CODEX_MEMORY_REPO:-$(_dev_dir)/codex-memory}/bootstrap.sh"
+  local codex_memory_bootstrap codex_companion_dir
+  if [ -n "${CODEX_MEMORY_REPO:-}" ]; then
+    codex_memory_bootstrap="$CODEX_MEMORY_REPO/bootstrap.sh"
+  else
+    codex_companion_dir="$(_companion_dev_dir)" || return 1
+    codex_memory_bootstrap="${codex_companion_dir%/}/codex-memory/bootstrap.sh"
+  fi
   if [ -f "$codex_memory_bootstrap" ] \
     && ! bash "$codex_memory_bootstrap"; then
     echo "⚠ Codex private defaults could not be applied — continuing with the existing local config." >&2
@@ -1100,8 +1135,13 @@ agy() {
   done
   set -- "${normalized_args[@]}"
 
-  local agy_memory_bootstrap
-  agy_memory_bootstrap="${AGY_MEMORY_REPO:-$(_dev_dir)/agy-memory}/bootstrap.sh"
+  local agy_memory_bootstrap agy_companion_dir
+  if [ -n "${AGY_MEMORY_REPO:-}" ]; then
+    agy_memory_bootstrap="$AGY_MEMORY_REPO/bootstrap.sh"
+  else
+    agy_companion_dir="$(_companion_dev_dir)" || return 1
+    agy_memory_bootstrap="${agy_companion_dir%/}/agy-memory/bootstrap.sh"
+  fi
   if [ -f "$agy_memory_bootstrap" ] \
     && ! bash "$agy_memory_bootstrap"; then
     echo "⚠ Antigravity private defaults could not be applied — continuing with the existing local config." >&2

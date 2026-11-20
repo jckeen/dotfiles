@@ -391,6 +391,8 @@ check "#701 DOTFILES_DEV_DIR keeps setup.sh off the checkout's sibling claude-me
   '[ ! -e "$SENTINEL" ] && ! grep -Fq "$FAKE_DEV/claude-memory" <<< "$iso_out"'
 check "#701 setup.sh reports the overridden location" \
   'grep -Fq "$ISO/empty/claude-memory/bootstrap.sh" <<< "$iso_out"'
+check "#701 ~/.claude/dev-dir stays anchored to the checkout parent under DOTFILES_DEV_DIR" \
+  'grep -Fq "would write $ISO/test-home/.claude/dev-dir ($FAKE_DEV)" <<< "$iso_out"'
 check "#701 a relative DOTFILES_DEV_DIR is refused" \
   '! run_iso DOTFILES_DEV_DIR=relative/dir >/dev/null'
 codex_out="$(run_iso_codex DOTFILES_DEV_DIR="$ISO/empty")"
