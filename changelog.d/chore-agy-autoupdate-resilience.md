@@ -1,0 +1,5 @@
+## 2026-11-19 — chore(antigravity): detect stale agy auto-update binaries and document recovery
+
+- Updated `check-antigravity.sh` to detect stale `agy.*.old` auto-update backup binaries under `~/.local/bin` (with `AGY_BIN_DIR` and `AGY_PROC_DIR` overrides for isolated testing) as read-only advisory checks — never auto-deleting backups under `--fix` — while validating every directory component of `AGY_BIN_DIR`, checking replacement `agy` executability, and failing closed whenever `/proc` process visibility or mountinfo is incomplete, masked, or restricted.
+- Added the `Runtime Resilience` mid-session `agy.*.old` sandbox recovery rule to `agents/canon/fragments/antigravity.md` and regenerated `antigravity/GEMINI.md` via `gen-instruction-files.sh`.
+- Added fixture tests covering idle, in-use, unreadable-PID, missing/unreadable mountinfo, hidepid, sandbox-masked, missing/empty `/proc`, broken replacement, rollback target, symlinked ancestors, non-canonical `.`/`..`, and relative `AGY_BIN_DIR` cases in `claude/scripts/tests/antigravity-config.test.sh`.
