@@ -27,6 +27,10 @@ context, tokens, and machine paths stay out of here — they live in
 - A test asserts behavior: call the code and check its result. Never assert on
   source text, or only that a mock was called. Use the lowest test level that
   proves the change, and a fake over a mock.
+- Prefer the real engine or parser over a hand-rolled regex or grammar scanner
+  in tests: let the target runtime evaluate or parse the artifact (for
+  example, PostgreSQL `PREPARE` and `pg_locks` instead of regex-scanning SQL)
+  so grammar edge cases cannot slip past the test.
 - Two-floor grounding (ADR-0006): an adopt/skip verdict on an external
   technology must clear a *project floor* (a verified local fact) and an
   *external floor* (a verified source) — neither compensating for the other.
@@ -138,6 +142,21 @@ Full role table and rationale: `../claude/MULTI-AGENT.md`. The operative rules:
   something else, change no CI: file an issue. Required checks, branch
   protection and merge queues are the operator's decision: propose, never
   change. Never save minutes by weakening what gates a merge.
+
+## Runtime Resilience
+
+- **Auto-update mid-session recovery (`agy.*.old`):** `agy` self-updates in
+  the background by renaming the running binary to `agy.*.old` under
+  `~/.local/bin` and writing the new binary (`agy --help` and
+  `agy update --help` expose no flag to disable or defer this). Inside the
+  Linux/WSL terminal sandbox, that replacement can break subsequent
+  `run_command` launches mid-session with executable or mount errors. If
+  that happens, do not retry in a loop or ask to bypass the sandbox: write a
+  brief handoff note containing your conversation ID, stop cleanly, and tell
+  the operator to resume on the updated binary with
+  `agy --conversation <id>` (and after older sessions exit, check with
+  `check-antigravity.sh` on the host and remove stale `~/.local/bin/agy.*.old`
+  backups manually).
 
 ## Teammate Contract
 
