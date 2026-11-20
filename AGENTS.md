@@ -27,6 +27,10 @@ report a local gate or hook as having run.
 - A test asserts behavior: call the code and check its result. Never assert on
   source text, or only that a mock was called. Use the lowest test level that
   proves the change, and a fake over a mock.
+- Prefer the real engine or parser over a hand-rolled regex or grammar scanner
+  in tests: let the target runtime evaluate or parse the artifact (for
+  example, PostgreSQL `PREPARE` and `pg_locks` instead of regex-scanning SQL)
+  so grammar edge cases cannot slip past the test.
 
 ## Build standards
 

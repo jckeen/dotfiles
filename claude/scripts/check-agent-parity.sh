@@ -67,6 +67,7 @@ RULES=(
   "verify-changes|way to check the work|verify (meaningful|your) (changes|work)|smallest useful (test|check)"
   "report-unrun-tests|test (you|that) could not (be )?run"
   "tests-assert-behavior|a test asserts behavior"
+  "real-engine-tests|real engine or parser over .*hand-rolled regex"
   "no-commit-secrets|never (commit|stage) .*(auth|secret|token|credential|\.env)"
   "private-memory-split|claude-memory|codex-memory|agy-memory|private .*(repo|memory)"
   "doc-contract|doc.?contract|check-doc-truth"
