@@ -193,6 +193,17 @@ it, so links would dangle once the worktree is removed. Run it from the main
 checkout, or set `DOTFILES_ALLOW_LINKED_WORKTREE=1` to link a worktree on
 purpose. `--check` stays read-only and works anywhere.
 
+`setup.sh`, the health checkers, and the launchers look for the private
+companion repos (`claude-memory`, `codex-memory`, `agy-memory`) next to the
+checkout by default. Set `DOTFILES_DEV_DIR` to an absolute path to redirect
+those companion lookups per run (as the test suites do so a throwaway-`HOME`
+run never reaches the real repos, #701) without changing `~/.claude/dev-dir`
+(which always records the installed `dotfiles` checkout's parent for launchers
+and `dotfiles-update`). Note that `claude/CLAUDE.md`'s static
+`@~/dev/claude-memory/CLAUDE.md` import is not redirected by `DOTFILES_DEV_DIR`
+yet (tracked in #801), so keep live `claude-memory` at `~/dev/claude-memory`
+if you rely on that import.
+
 ```bash
 ./setup.sh --help      # usage and flag reference
 ```

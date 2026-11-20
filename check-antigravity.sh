@@ -11,7 +11,6 @@ DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGY_SRC="$DOTFILES_DIR/antigravity"
 AGY_DST="$HOME/.gemini/config"
 AGY_STATE="$HOME/.gemini/antigravity-cli"
-AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/agy-memory}"
 ERRORS=0
 WARNINGS=0
 STALE_BINARIES=0
@@ -42,6 +41,12 @@ if [ ! -f "$DOTFILES_DIR/lib-checks.sh" ]; then
 fi
 # shellcheck source=lib-checks.sh
 source "$DOTFILES_DIR/lib-checks.sh"
+# The sibling repo follows DOTFILES_DEV_DIR like setup.sh does (#701); the
+# explicit AGY_MEMORY_REPO still wins.
+if [ -z "${AGY_MEMORY_REPO:-}" ]; then
+  _agy_dev_dir="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
+  AGY_MEMORY_REPO="${_agy_dev_dir%/}/agy-memory"
+fi
 if [ ! -f "$DOTFILES_DIR/claude/scripts/retired-skill-links.sh" ]; then
   echo "FATAL: retired-skill-links.sh is missing (broken checkout)" >&2
   exit 1

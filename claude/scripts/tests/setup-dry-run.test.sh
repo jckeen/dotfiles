@@ -31,7 +31,7 @@ SETUP="$REPO_ROOT/setup.sh"
 export DOTFILES_ALLOW_LINKED_WORKTREE=1
 # The assertions below expect the all-services migration default; a
 # developer's own service selection (issue #425) must not leak in.
-unset XDG_CONFIG_HOME DOTFILES_SERVICES
+unset XDG_CONFIG_HOME DOTFILES_SERVICES CODEX_MEMORY_REPO AGY_MEMORY_REPO
 
 pass=0
 failed=0
@@ -45,6 +45,12 @@ fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 # shellcheck source=claude/scripts/tests/lib-snapshot.sh
 . "$SCRIPT_DIR/lib-snapshot.sh"
 
+# setup.sh finds the private repo at $DEV_DIR/claude-memory, and DEV_DIR defaults
+# to the checkout's parent, so a checkout directly under ~/dev would run the
+# operator's REAL bootstrap against the throwaway HOME (#701). Point it at an
+# empty directory under the test root.
+DEV_ISO="$(mktemp -d)"
+export DOTFILES_DEV_DIR="$DEV_ISO"
 TESTHOME="$(mktemp -d)"
 OUT="$(mktemp)"
 CHECK_OUT="$(mktemp)"
@@ -59,7 +65,7 @@ SKILLS_EXTERNAL="$(mktemp -d)"
 unset TMUX
 TMUX_ISO="$(mktemp -d)"
 export TMUX_TMPDIR="$TMUX_ISO"
-trap 'rm -rf "$TESTHOME" "$OUT" "$CHECK_OUT" "$INSTALL_OUT" "$SKILLS_OUT" "$SKILLS_EXTERNAL" "$TMUX_ISO"; rm -f "$REPO_ROOT/agents/skills/orchestrate/dir-link-fixture"' EXIT
+trap 'rm -rf "$DEV_ISO" "$TESTHOME" "$OUT" "$CHECK_OUT" "$INSTALL_OUT" "$SKILLS_OUT" "$SKILLS_EXTERNAL" "$TMUX_ISO"; rm -f "$REPO_ROOT/agents/skills/orchestrate/dir-link-fixture"' EXIT
 
 # Seed the mutation-tempting fixtures.
 git config --file "$TESTHOME/.gitconfig" user.name test
@@ -151,6 +157,17 @@ if grep -q 'Checking Codex public-safe config' "$CHECK_OUT" \
   ok "setup.sh --check audits Codex and Antigravity as well as Claude"
 else
   fail "setup.sh --check is not a three-runtime audit"
+fi
+
+REPO_PARENT="$(dirname "$REPO_ROOT")"
+if grep -Fq "$DEV_ISO/claude-memory/bootstrap.sh" "$CHECK_OUT" \
+  && ! grep -Fq "$REPO_PARENT/claude-memory" "$OUT" \
+  && ! grep -Fq "$REPO_PARENT/agy-memory" "$OUT" \
+  && ! grep -Fq "$REPO_PARENT/claude-memory" "$CHECK_OUT" \
+  && ! grep -Fq "$REPO_PARENT/agy-memory" "$CHECK_OUT"; then
+  ok "DOTFILES_DEV_DIR kept setup.sh off sibling memory repos beside REPO_ROOT"
+else
+  fail "setup.sh reached sibling memory repos beside REPO_ROOT instead of DOTFILES_DEV_DIR"
 fi
 
 PATH="/usr/bin:/bin" HOME="$TESTHOME" CODEX_MEMORY_REPO="$TESTHOME/codex-memory" \

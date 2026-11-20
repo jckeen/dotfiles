@@ -27,7 +27,7 @@ chmod +x "$SHIM_DIR/agy"
 export CALLS
 export HOME="$TEST_HOME"
 export PATH="$SHIM_DIR:/usr/bin:/bin"
-unset AGY_MEMORY_REPO
+unset DOTFILES_DEV_DIR AGY_MEMORY_REPO
 
 # shellcheck source=../../../.bash_aliases
 source "$REPO_ROOT/.bash_aliases"

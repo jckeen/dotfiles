@@ -23,7 +23,9 @@ trap 'rm -rf "$ROOT"' EXIT
 TESTHOME="$ROOT/home"
 MAIN="$ROOT/main"
 WT="$ROOT/linked"
-mkdir -p "$TESTHOME"
+mkdir -p "$TESTHOME" "$ROOT/empty-dev"
+export DOTFILES_DEV_DIR="$ROOT/empty-dev"
+unset CODEX_MEMORY_REPO AGY_MEMORY_REPO XDG_CONFIG_HOME DOTFILES_SERVICES
 
 git clone -q "$REPO_ROOT" "$MAIN"
 git -C "$MAIN" worktree add -q --detach "$WT" HEAD

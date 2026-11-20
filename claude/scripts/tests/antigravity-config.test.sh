@@ -20,8 +20,11 @@ canon_tmpdir() {
 R="$(canon_tmpdir)"
 H="$(canon_tmpdir)"
 EXTERNAL="$(canon_tmpdir)"
+EMPTY_DEV="$(canon_tmpdir)"
 OUT="$(mktemp)"
-trap 'rm -rf "$R" "$H" "$EXTERNAL"; rm -f "$OUT"' EXIT
+trap 'rm -rf "$R" "$H" "$EXTERNAL" "$EMPTY_DEV"; rm -f "$OUT"' EXIT
+export DOTFILES_DEV_DIR="$EMPTY_DEV"
+unset AGY_MEMORY_REPO
 
 mkdir -p "$R/antigravity"
 cp "$REPO_ROOT/check-antigravity.sh" "$REPO_ROOT/lib-checks.sh" "$R/"
@@ -169,7 +172,7 @@ PROC_DIR="$(canon_tmpdir)"
 BIN_OUTSIDE="$(canon_tmpdir)"
 BIN_LOCAL_HOME="$(canon_tmpdir)"
 CLEAN_MOUNTINFO="$(mktemp)"
-trap 'chmod 700 "$PROC_DIR"/[0-9]* 2>/dev/null || true; rm -rf "$R" "$H" "$EXTERNAL" "$BIN_DIR" "$PROC_DIR" "$BIN_OUTSIDE" "$BIN_LOCAL_HOME"; rm -f "$OUT" "$CLEAN_MOUNTINFO"' EXIT
+trap 'chmod 700 "$PROC_DIR"/[0-9]* 2>/dev/null || true; rm -rf "$R" "$H" "$EXTERNAL" "$EMPTY_DEV" "$BIN_DIR" "$PROC_DIR" "$BIN_OUTSIDE" "$BIN_LOCAL_HOME"; rm -f "$OUT" "$CLEAN_MOUNTINFO"' EXIT
 
 cat > "$CLEAN_MOUNTINFO" <<'EOF'
 551 550 0:90 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
@@ -464,7 +467,7 @@ UNREAD_PARENT="$(canon_tmpdir)"
 UNREAD_BIN="$UNREAD_PARENT/nested/bin"
 mkdir -p "$UNREAD_BIN"
 printf 'hidden old binary\n' > "$UNREAD_BIN/agy.hidden.old"
-trap 'chmod -R u+rwX "$UNREAD_PARENT" 2>/dev/null || true; chmod 700 "$PROC_DIR"/[0-9]* 2>/dev/null || true; rm -rf "$R" "$H" "$EXTERNAL" "$BIN_DIR" "$PROC_DIR" "$BIN_OUTSIDE" "$BIN_LOCAL_HOME" "$UNREAD_PARENT"; rm -f "$OUT" "$CLEAN_MOUNTINFO"' EXIT
+trap 'chmod -R u+rwX "$UNREAD_PARENT" 2>/dev/null || true; chmod 700 "$PROC_DIR"/[0-9]* 2>/dev/null || true; rm -rf "$R" "$H" "$EXTERNAL" "$EMPTY_DEV" "$BIN_DIR" "$PROC_DIR" "$BIN_OUTSIDE" "$BIN_LOCAL_HOME" "$UNREAD_PARENT"; rm -f "$OUT" "$CLEAN_MOUNTINFO"' EXIT
 
 for mode in 111 444 000; do
   chmod "$mode" "$UNREAD_BIN"

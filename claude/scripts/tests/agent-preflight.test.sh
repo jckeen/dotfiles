@@ -20,13 +20,17 @@ fail() { failed=$((failed + 1)); echo "FAIL - $1"; }
 TEST_HOME="$(mktemp -d)"
 TEST_DEV="$(mktemp -d)"
 REAL_DEV="$(mktemp -d)"
+COMPANION_DEV="$(mktemp -d)"
+CUSTOM_CODEX="$(mktemp -d)"
 SHIM_DIR="$(mktemp -d)"
 HEALTH_CALLS="$(mktemp)"
 WRAPPER_CALLS="$(mktemp)"
 RUNTIME_CALLS="$(mktemp)"
-trap 'rm -rf "$TEST_HOME" "$TEST_DEV" "$REAL_DEV" "$SHIM_DIR"; rm -f "$HEALTH_CALLS" "$WRAPPER_CALLS" "$RUNTIME_CALLS"' EXIT
+COMP_OUT="$(mktemp)"
+trap 'rm -rf "$TEST_HOME" "$TEST_DEV" "$REAL_DEV" "$COMPANION_DEV" "$CUSTOM_CODEX" "$SHIM_DIR"; rm -f "$HEALTH_CALLS" "$WRAPPER_CALLS" "$RUNTIME_CALLS" "$COMP_OUT"' EXIT
 
 export HOME="$TEST_HOME"
+unset DOTFILES_DEV_DIR CODEX_MEMORY_REPO AGY_MEMORY_REPO
 # shellcheck source=../../../.bash_aliases
 source "$REPO_ROOT/.bash_aliases"
 
@@ -203,6 +207,70 @@ if [ "$preflight_rc" -eq 0 ] && [ -s "$HEALTH_CALLS" ] \
   ok "a clean sync emits no warning"
 else
   fail "clean sync rc=$preflight_rc, stderr: $preflight_err"
+fi
+
+# ── Relocated companion repo sync under pull-all (#701) ─────────────────
+g clone -q "$ORIGIN" "$COMPANION_DEV/claude-memory"
+g -C "$REAL_DEV/ordinary" worktree add -q --no-track -b agy-feature "$COMPANION_DEV/agy-memory" main
+commit_file "$COMPANION_DEV/agy-memory" agy-local "local companion feature"
+printf 'dirty agy edit\n' > "$COMPANION_DEV/agy-memory/dirty"
+agy_head_before="$(g -C "$COMPANION_DEV/agy-memory" rev-parse HEAD)"
+agy_status_before="$(g -C "$COMPANION_DEV/agy-memory" status --porcelain)"
+g clone -q "$ORIGIN" "$CUSTOM_CODEX/my-codex-memory"
+
+commit_file "$SEED" tracked "companion remote update"
+g -C "$SEED" push -q
+companion_tip="$(g -C "$SEED" rev-parse HEAD)"
+
+comp_out="$(DOTFILES_DEV_DIR="$COMPANION_DEV" CODEX_MEMORY_REPO="$CUSTOM_CODEX/my-codex-memory" pull-all 2>&1)"
+comp_rc=$?
+if [ "$comp_rc" -eq 0 ] \
+  && [ "$(g -C "$COMPANION_DEV/claude-memory" rev-parse HEAD)" = "$companion_tip" ] \
+  && [ "$(g -C "$CUSTOM_CODEX/my-codex-memory" rev-parse HEAD)" = "$companion_tip" ] \
+  && [ "$(g -C "$COMPANION_DEV/agy-memory" rev-parse HEAD)" = "$agy_head_before" ] \
+  && [ "$(g -C "$COMPANION_DEV/agy-memory" status --porcelain)" = "$agy_status_before" ] \
+  && grep -Eq 'agy-memory[[:space:]]+Fetched only' <<< "$comp_out"; then
+  ok "pull-all fast-forwards relocated companions and keeps linked companion worktrees fetch-only"
+else
+  fail "companion pull-all rc=$comp_rc, output: $comp_out"
+fi
+
+g clone -q "$ORIGIN" "$REAL_DEV/claude-memory"
+dedup_out="$(DOTFILES_DEV_DIR="$REAL_DEV" pull-all 2>&1)"
+dedup_rc=$?
+dedup_count="$(grep -cE '^[[:space:]]*claude-memory[[:space:]]' <<< "$dedup_out" || true)"
+if [ "$dedup_rc" -eq 0 ] && [ "$dedup_count" -eq 1 ]; then
+  ok "pull-all deduplicates companion repos already under the dev dir"
+else
+  fail "pull-all dedup rc=$dedup_rc count=$dedup_count output: $dedup_out"
+fi
+rm -rf "$REAL_DEV/claude-memory"
+
+commit_file "$COMPANION_DEV/claude-memory" comp-local "diverged companion"
+commit_file "$SEED" tracked "another companion remote update"
+g -C "$SEED" push -q
+_pull_all_failures=""
+DOTFILES_DEV_DIR="$COMPANION_DEV" pull-all > "$COMP_OUT" 2>&1
+comp_fail_rc=$?
+comp_fail_out="$(cat "$COMP_OUT")"
+if [ "$comp_fail_rc" -ne 0 ] \
+  && grep -Eq 'claude-memory[[:space:]]+fatal:' <<< "$comp_fail_out" \
+  && grep -q 'claude-memory: fatal:' <<< "$_pull_all_failures"; then
+  ok "pull-all reports non-fast-forward failures in relocated companion repos"
+else
+  fail "companion pull failure rc=$comp_fail_rc failures='$_pull_all_failures' output: $comp_fail_out"
+fi
+
+_pull_all_failures=""
+DOTFILES_DEV_DIR=relative/dir pull-all > "$COMP_OUT" 2>&1
+invalid_rc=$?
+invalid_out="$(cat "$COMP_OUT")"
+if [ "$invalid_rc" -ne 0 ] \
+  && grep -q 'DOTFILES_DEV_DIR' <<< "$invalid_out" \
+  && grep -q 'DOTFILES_DEV_DIR:' <<< "$_pull_all_failures"; then
+  ok "pull-all rejects an invalid relative DOTFILES_DEV_DIR and records failure"
+else
+  fail "invalid DOTFILES_DEV_DIR rc=$invalid_rc failures='$_pull_all_failures' output: $invalid_out"
 fi
 
 # ── Shim fixture ───────────────────────────────────────────────────────

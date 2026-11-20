@@ -248,3 +248,102 @@ manifest_per_project_plugins() {
     }
   '
 }
+
+# dotfiles_dev_dir <dotfiles-dir> — the directory that holds the sibling
+# repos (claude-memory, codex-memory, agy-memory). DOTFILES_DEV_DIR overrides
+# the derivation: the test suites run setup.sh and the check-* scripts against
+# a throwaway HOME and must never reach the operator's real siblings when the
+# checkout sits directly under ~/dev (#701). The override must be an absolute
+# single-line path; trailing slashes are trimmed while "/" stays "/".
+# Otherwise the checkout's parent, as before. Shared by setup.sh and the three
+# check-* scripts so the audit can never look somewhere the install did not.
+dotfiles_dev_dir() {
+  if [ -n "${DOTFILES_DEV_DIR:-}" ]; then
+    case "$DOTFILES_DEV_DIR" in
+      *$'\n'*)
+        echo "ERROR: DOTFILES_DEV_DIR must not contain newlines" >&2
+        return 1
+        ;;
+      /*)
+        local d="$DOTFILES_DEV_DIR"
+        while [ "$d" != "/" ] && [ "${d%/}" != "$d" ]; do
+          d="${d%/}"
+        done
+        printf '%s\n' "$d"
+        ;;
+      *)
+        echo "ERROR: DOTFILES_DEV_DIR must be an absolute path (got: $DOTFILES_DEV_DIR)" >&2
+        return 1
+        ;;
+    esac
+  else
+    dirname "$1"
+  fi
+}
+
+_check_one_claude_memory_link() {
+  local label="$1" src="$2" dst="$3" memory_repo="$4" target
+  if [ -L "$dst" ]; then
+    target="$(readlink "$dst" 2>/dev/null || true)"
+    if [ -d "$memory_repo" ] && [ -e "$src" ] && [ "$target" != "$src" ]; then
+      red "WRONG  $label -> $target (expected $src — run setup.sh)"
+      ERRORS=$((${ERRORS:-0} + 1))
+    elif [ ! -e "$dst" ]; then
+      red "BROKEN  $label -> $target (target missing)"
+      ERRORS=$((${ERRORS:-0} + 1))
+    elif [ -d "$memory_repo" ] && [ -d "$dst" ] && [ "$target" != "$src" ]; then
+      red "WRONG  $label -> $target (expected $src — run setup.sh)"
+      ERRORS=$((${ERRORS:-0} + 1))
+    fi
+  elif [ -d "$memory_repo" ] && [ -d "$dst" ]; then
+    yellow "NOT LINKED  $label (exists as directory, not symlink — run setup.sh)"
+    WARNINGS=$((${WARNINGS:-0} + 1))
+  elif [ -d "$memory_repo" ] && [ -e "$src" ]; then
+    if [ -e "$dst" ]; then
+      yellow "NOT LINKED  $label (exists as non-directory, not symlink — run setup.sh)"
+    else
+      yellow "MISSING  $label symlink (repo memory exists but not linked — run setup.sh)"
+    fi
+    WARNINGS=$((${WARNINGS:-0} + 1))
+  fi
+}
+
+# check_claude_memory_links <checkout-dev-dir> <companion-dev-dir> <claude-dst>
+# Audit managed Claude project-memory symlinks against setup.sh's exact
+# [ -e "$src" ] || [ -d "$dst" ] contract (#701). Shared between check-claude.sh
+# and setup.sh run_health_audit so --check / --repair enforce the exact
+# resolved-target invariant even when claude-memory/bootstrap.sh is absent.
+# Must stay safe under set -euo pipefail + ERR trap (callers check return
+# status). Returns 0 iff clean, 1 if any ERRORS or WARNINGS were added.
+check_claude_memory_links() {
+  local checkout_dev_dir="$1" companion_dev_dir="$2" claude_dst="$3"
+  local checkout_prefix="${checkout_dev_dir%/}"
+  local memory_repo="${companion_dev_dir%/}/claude-memory"
+  local dev_munged _proj _proj_name _proj_munged
+  local start_errors="${ERRORS:-0}" start_warnings="${WARNINGS:-0}"
+
+  dev_munged="$(echo "$checkout_dev_dir" | sed 's|^/||; s|/|-|g')"
+  _check_one_claude_memory_link "memory" \
+    "$memory_repo/dev/memory" \
+    "$claude_dst/projects/-${dev_munged}/memory" \
+    "$memory_repo"
+
+  if [ -d "$memory_repo" ] || [ -d "$claude_dst/projects" ]; then
+    for _proj in "$checkout_prefix"/*/; do
+      if [ ! -d "$_proj" ]; then
+        continue
+      fi
+      _proj_name="$(basename "$_proj")"
+      if [ "$_proj_name" = "claude-memory" ]; then
+        continue
+      fi
+      _proj_munged="$(echo "${_proj%/}" | sed 's|^/||; s|/|-|g')"
+      _check_one_claude_memory_link "memory ($_proj_name)" \
+        "$memory_repo/$_proj_name/memory" \
+        "$claude_dst/projects/-${_proj_munged}/memory" \
+        "$memory_repo"
+    done
+  fi
+
+  [ "${ERRORS:-0}" -eq "$start_errors" ] && [ "${WARNINGS:-0}" -eq "$start_warnings" ]
+}

@@ -102,26 +102,13 @@ for root in "$CLAUDE_DST" "$CLAUDE_DST/skills"; do
   fi
 done
 
-# Memory repo check
+# Memory repo check (shared with setup.sh run_health_audit in lib-checks.sh)
 echo "Checking memory repo..."
-# Derive dev dir from dotfiles repo location (parent of this repo)
-DEV_DIR="$(dirname "$DOTFILES_DIR")"
-MEMORY_REPO="$DEV_DIR/claude-memory"
-MEMORY_PROJECT_DIR="$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
-MEMORY_DST="$CLAUDE_DST/projects/-${MEMORY_PROJECT_DIR}/memory"
-
-if [ -L "$MEMORY_DST" ]; then
-  if [ ! -e "$MEMORY_DST" ]; then
-    red "BROKEN  memory -> $(readlink "$MEMORY_DST") (target missing)"
-    ERRORS=$((ERRORS + 1))
-  fi
-elif [ -d "$MEMORY_DST" ]; then
-  yellow "NOT LINKED  memory (exists as directory, not symlink — run setup.sh)"
-  WARNINGS=$((WARNINGS + 1))
-elif [ -d "$MEMORY_REPO" ]; then
-  yellow "MISSING  memory symlink (repo exists but not linked — run setup.sh)"
-  WARNINGS=$((WARNINGS + 1))
-fi
+# Companion memory repo follows DOTFILES_DEV_DIR like setup.sh does (#701),
+# while the Claude project key stays anchored to the checkout's parent dev dir.
+CHECKOUT_DEV_DIR="$(dirname "$DOTFILES_DIR")"
+COMPANION_DEV_DIR="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
+check_claude_memory_links "$CHECKOUT_DEV_DIR" "$COMPANION_DEV_DIR" "$CLAUDE_DST" || true
 echo ""
 
 # Walk the whole claude/ tree from the shared enumerator (lib-symlinks.sh):

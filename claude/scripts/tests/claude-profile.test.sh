@@ -237,7 +237,7 @@ new_home launcher
 mkdir -p "$ROOT/dev"
 ln -s "$REPO_ROOT" "$ROOT/dev/dotfiles"
 echo "$ROOT/dev" > "$BASE/dev-dir"
-unset CLAUDE_CONFIG_DIR CLAUDE_WORK_CONFIG_DIR _DEV_DIR_CACHE
+unset CLAUDE_CONFIG_DIR CLAUDE_WORK_CONFIG_DIR _DEV_DIR_CACHE DOTFILES_DEV_DIR CODEX_MEMORY_REPO AGY_MEMORY_REPO
 # shellcheck source=../../../.bash_aliases
 source "$REPO_ROOT/.bash_aliases"
 export PATH="$REAL_PATH"

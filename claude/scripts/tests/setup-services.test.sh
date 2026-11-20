@@ -19,7 +19,7 @@ SETUP="$REPO_ROOT/setup.sh"
 # worktrees; every run here targets a throwaway HOME.
 export DOTFILES_ALLOW_LINKED_WORKTREE=1
 # A developer's real selection must never leak in (or be written to).
-unset XDG_CONFIG_HOME DOTFILES_SERVICES
+unset XDG_CONFIG_HOME DOTFILES_SERVICES CODEX_MEMORY_REPO AGY_MEMORY_REPO
 
 pass=0
 failed=0
@@ -35,6 +35,12 @@ check() { if eval "$2"; then ok "$1"; else fail "$1"; fi; }
 ROOT="$(mktemp -d)"
 trap 'rm -rf "$ROOT"' EXIT
 OUT="$ROOT/out"
+# setup.sh finds the private repo at $DEV_DIR/claude-memory, and DEV_DIR defaults
+# to the checkout's parent, so a checkout directly under ~/dev would run the
+# operator's REAL bootstrap against the throwaway HOME (#701). Point it at an
+# empty directory under the test root.
+mkdir -p "$ROOT/dev"
+export DOTFILES_DEV_DIR="$ROOT/dev"
 
 # /usr/bin:/bin carries the basics but not the agent CLIs (they install under
 # ~/.local/bin), so the install sections plan their installers instead of
@@ -330,6 +336,132 @@ check "install path: the changed content is in kept/" \
   "grep -qx mine \"$H\"/.claude/.migrated-skill-dirs/kept/demo.*/SKILL.md"
 check "install path: the error is reported and the exit is non-zero" \
   "[ \"$tree_rc\" -ne 0 ] && grep -q 'ERROR: .*changed during migration.*skills/demo' \"$OUT\""
+
+# ── #701 guard: no suite may reach the operator's real claude-memory ─────────
+# setup.sh looks for $DEV_DIR/claude-memory/bootstrap.sh, and DEV_DIR defaults
+# to the checkout's parent, so a checkout directly under ~/dev ran the real
+# private bootstrap against a throwaway HOME. The layout is faked here, never
+# the real ~/dev: a symlink named dotfiles inside a throwaway dev directory
+# points at this checkout (setup.sh derives DEV_DIR from its logical path), next
+# to a planted claude-memory whose bootstrap drops a sentinel when executed.
+ISO="$ROOT/iso701"
+FAKE_DEV="$ISO/dev"
+SENTINEL="$ISO/bootstrap-ran"
+mkdir -p "$ISO/test-home" "$ISO/empty" "$FAKE_DEV/claude-memory" "$FAKE_DEV/codex-memory" "$FAKE_DEV/agy-memory"
+ln -s "$REPO_ROOT" "$FAKE_DEV/dotfiles"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$SENTINEL" \
+  > "$FAKE_DEV/claude-memory/bootstrap.sh"
+chmod +x "$FAKE_DEV/claude-memory/bootstrap.sh"
+CODEX_SENTINEL="$ISO/codex-bootstrap-ran"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$CODEX_SENTINEL" \
+  > "$FAKE_DEV/codex-memory/bootstrap.sh"
+chmod +x "$FAKE_DEV/codex-memory/bootstrap.sh"
+AGY_SENTINEL="$ISO/agy-bootstrap-ran"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$AGY_SENTINEL" \
+  > "$FAKE_DEV/agy-memory/bootstrap.sh"
+chmod +x "$FAKE_DEV/agy-memory/bootstrap.sh"
+printf '{"permissions":{"allow":["command(echo)"]}}\n' \
+  > "$FAKE_DEV/agy-memory/permissions.local.json"
+run_iso() {
+  env -i PATH="$CLEAN_PATH" HOME="$ISO/test-home" TERM=dumb LC_ALL=C \
+    DOTFILES_ALLOW_LINKED_WORKTREE=1 CODEX_MEMORY_REPO="$ISO/codex-memory" \
+    "$@" "$FAKE_DEV/dotfiles/setup.sh" --yes --dry-run 2>&1
+}
+# Same, without the explicit CODEX_MEMORY_REPO and with every service: the
+# codex-memory and agy-memory siblings must follow the override too, not the
+# checkout's parent (Codex bot on PR #729).
+run_iso_codex() {
+  env -i PATH="$CLEAN_PATH" HOME="$ISO/test-home" TERM=dumb LC_ALL=C \
+    DOTFILES_ALLOW_LINKED_WORKTREE=1 DOTFILES_SERVICES=claude,codex,antigravity \
+    "$@" "$FAKE_DEV/dotfiles/setup.sh" --yes --dry-run 2>&1
+}
+# Control: without an override the sibling bootstrap IS found, so the isolated
+# case below cannot pass merely because the fixture never reached setup.sh.
+iso_out="$(run_iso)"
+check "#701 control: no override falls back to the checkout's parent" \
+  '[ -e "$SENTINEL" ] && grep -Fq "$FAKE_DEV/claude-memory/bootstrap.sh" <<< "$iso_out"'
+ctrl_codex_out="$(run_iso_codex)"
+check "#701 control: no override picks up agy-memory permissions overlay" \
+  'grep -Fq -- "--overlay $FAKE_DEV/agy-memory/permissions.local.json" <<< "$ctrl_codex_out"'
+# Clear all bootstrap sentinels touched by control runs before exercising the
+# DOTFILES_DEV_DIR override.
+rm -f "$SENTINEL" "$CODEX_SENTINEL" "$AGY_SENTINEL"
+iso_out="$(run_iso DOTFILES_DEV_DIR="$ISO/empty")"
+check "#701 DOTFILES_DEV_DIR keeps setup.sh off the checkout's sibling claude-memory" \
+  '[ ! -e "$SENTINEL" ] && ! grep -Fq "$FAKE_DEV/claude-memory" <<< "$iso_out"'
+check "#701 setup.sh reports the overridden location" \
+  'grep -Fq "$ISO/empty/claude-memory/bootstrap.sh" <<< "$iso_out"'
+check "#701 ~/.claude/dev-dir stays anchored to the checkout parent under DOTFILES_DEV_DIR" \
+  'grep -Fq "would write $ISO/test-home/.claude/dev-dir ($FAKE_DEV)" <<< "$iso_out"'
+check "#701 a relative DOTFILES_DEV_DIR is refused" \
+  '! run_iso DOTFILES_DEV_DIR=relative/dir >/dev/null'
+codex_out="$(run_iso_codex DOTFILES_DEV_DIR="$ISO/empty")"
+check "#701 the codex-memory sibling follows DOTFILES_DEV_DIR too" \
+  '[ ! -e "$CODEX_SENTINEL" ] && ! grep -Fq "$FAKE_DEV/codex-memory" <<< "$codex_out"'
+check "#701 the agy-memory sibling and overlay follow DOTFILES_DEV_DIR too" \
+  '[ ! -e "$AGY_SENTINEL" ] && ! grep -Fq "$FAKE_DEV/agy-memory" <<< "$codex_out"'
+codex_explicit_out="$(run_iso_codex DOTFILES_DEV_DIR="$ISO/empty" CODEX_MEMORY_REPO="$FAKE_DEV/codex-memory" AGY_MEMORY_REPO="$FAKE_DEV/agy-memory")"
+check "#701 explicit CODEX_MEMORY_REPO still wins over DOTFILES_DEV_DIR" \
+  'grep -Fq "$FAKE_DEV/codex-memory/bootstrap.sh" <<< "$codex_explicit_out"'
+check "#701 explicit AGY_MEMORY_REPO still wins over DOTFILES_DEV_DIR (bootstrap + overlay)" \
+  'grep -Fq "$FAKE_DEV/agy-memory/bootstrap.sh" <<< "$codex_explicit_out" && grep -Fq -- "--overlay $FAKE_DEV/agy-memory/permissions.local.json" <<< "$codex_explicit_out"'
+# The health checkers derive the same sibling paths (setup.sh --check runs
+# them), so they must follow the override too. Planted files make the control
+# run name the planted sibling; the override run must not.
+mkdir -p "$FAKE_DEV/claude-memory/dev/memory"
+printf 'planted\n' > "$FAKE_DEV/codex-memory/AGENTS.local.md"
+printf 'planted\n' > "$FAKE_DEV/agy-memory/GEMINI.local.md"
+# The checkers stop early on an uninitialised tool, so give the throwaway home
+# the two directories they look for before reaching the memory-repo section.
+mkdir -p "$ISO/test-home/.codex" "$ISO/test-home/.gemini/config"
+run_checker() {
+  local script="$1"; shift
+  env -i PATH="$CLEAN_PATH" HOME="$ISO/test-home" TERM=dumb LC_ALL=C "$@" \
+    "$FAKE_DEV/dotfiles/$script" 2>&1 || true
+}
+for c in check-codex.sh:AGENTS.local.md check-antigravity.sh:GEMINI.local.md check-claude.sh:claude-memory; do
+  script="${c%%:*}"; planted="${c##*:}"
+  ctrl_out="$(run_checker "$script")"
+  over_out="$(run_checker "$script" DOTFILES_DEV_DIR="$ISO/empty")"
+  case "$script" in
+    check-claude.sh)
+      check "#701 $script control: without the override the planted sibling is in play" \
+        'grep -Fq "MISSING  memory" <<< "$ctrl_out"'
+      check "#701 $script never reports the planted sibling under DOTFILES_DEV_DIR" \
+        '! grep -Fq "MISSING  memory" <<< "$over_out"' ;;
+    *)
+      check "#701 $script control: without the override the planted sibling is in play" \
+        'grep -Fq "$planted" <<< "$ctrl_out"'
+      check "#701 $script never reports the planted sibling under DOTFILES_DEV_DIR" \
+        '! grep -Fq "$planted" <<< "$over_out" && ! grep -Fq "$FAKE_DEV" <<< "$over_out"' ;;
+  esac
+done
+check "#701 check-codex.sh explicit CODEX_MEMORY_REPO wins over DOTFILES_DEV_DIR" \
+  'grep -Fq "AGENTS.local.md" <<< "$(run_checker check-codex.sh DOTFILES_DEV_DIR="$ISO/empty" CODEX_MEMORY_REPO="$FAKE_DEV/codex-memory")"'
+check "#701 check-antigravity.sh explicit AGY_MEMORY_REPO wins over DOTFILES_DEV_DIR" \
+  'grep -Fq "GEMINI.local.md" <<< "$(run_checker check-antigravity.sh DOTFILES_DEV_DIR="$ISO/empty" AGY_MEMORY_REPO="$FAKE_DEV/agy-memory")"'
+check_out="$(env -i PATH="$CLEAN_PATH" HOME="$ISO/test-home" TERM=dumb LC_ALL=C \
+  DOTFILES_ALLOW_LINKED_WORKTREE=1 DOTFILES_SERVICES=claude,codex,antigravity DOTFILES_DEV_DIR="$ISO/empty" \
+  "$FAKE_DEV/dotfiles/setup.sh" --check 2>&1 || true)"
+check "#701 setup.sh --check never reports a planted sibling under DOTFILES_DEV_DIR" \
+  '! grep -Fq "$FAKE_DEV/codex-memory" <<< "$check_out" && ! grep -Fq "$FAKE_DEV/agy-memory" <<< "$check_out"'
+# The override's edge cases are checked on the shared helper itself, never by
+# running setup.sh with DOTFILES_DEV_DIR=/ (that would look for, and in a
+# dry run still execute, a real /claude-memory/bootstrap.sh on the host).
+# shellcheck source=lib-checks.sh
+. "$REPO_ROOT/lib-checks.sh"
+check "#701 helper: DOTFILES_DEV_DIR=/ keeps the root, not an empty dev dir" \
+  '[ "$(DOTFILES_DEV_DIR=/ dotfiles_dev_dir "$REPO_ROOT")" = / ]'
+check "#701 helper: repeated slashes stay root" \
+  '[ "$(DOTFILES_DEV_DIR=/// dotfiles_dev_dir "$REPO_ROOT")" = / ]'
+check "#701 helper: trailing slashes are trimmed" \
+  '[ "$(DOTFILES_DEV_DIR="$ISO/empty/" dotfiles_dev_dir "$REPO_ROOT")" = "$ISO/empty" ] && [ "$(DOTFILES_DEV_DIR="$ISO/empty///" dotfiles_dev_dir "$REPO_ROOT")" = "$ISO/empty" ]'
+check "#701 helper: a relative override is refused" \
+  '! DOTFILES_DEV_DIR=relative/dir dotfiles_dev_dir "$REPO_ROOT" 2>/dev/null'
+check "#701 helper: a multiline override is refused" \
+  '! DOTFILES_DEV_DIR=$'\''/tmp/a\nb'\'' dotfiles_dev_dir "$REPO_ROOT" 2>/dev/null'
+check "#701 helper: no override falls back to the checkout parent" \
+  '[ "$(env -u DOTFILES_DEV_DIR bash -c ". \"$REPO_ROOT/lib-checks.sh\"; dotfiles_dev_dir /a/b/dotfiles")" = /a/b ]'
 
 echo ""
 echo "setup-services: $pass passed, $failed failed"

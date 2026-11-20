@@ -7,7 +7,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 R="$(mktemp -d)" || { echo "FAIL - unable to allocate source fixture"; exit 1; }
 H="$(mktemp -d)" || { echo "FAIL - unable to allocate HOME fixture"; exit 1; }
 OUT="$(mktemp)" || { echo "FAIL - unable to allocate output fixture"; exit 1; }
-trap 'rm -rf "$R" "$H" "$OUT"' EXIT
+EMPTY_DEV="$(mktemp -d)" || { echo "FAIL - unable to allocate companion fixture"; exit 1; }
+trap 'rm -rf "$R" "$H" "$EMPTY_DEV" "$OUT"' EXIT
+export DOTFILES_DEV_DIR="$EMPTY_DEV"
+unset CODEX_MEMORY_REPO
 
 pass=0
 failed=0

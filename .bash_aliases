@@ -52,6 +52,34 @@ _dev_dir() {
   printf '%s\n' "$_DEV_DIR_CACHE"
 }
 
+# Companion memory repo root (claude-memory, codex-memory, agy-memory).
+# Mirrors dotfiles_dev_dir in lib-checks.sh (#701): honours an explicit
+# DOTFILES_DEV_DIR without altering _dev_dir() (which locates the installed
+# dotfiles checkout and project repos).
+_companion_dev_dir() {
+  if [ -n "${DOTFILES_DEV_DIR:-}" ]; then
+    case "$DOTFILES_DEV_DIR" in
+      *$'\n'*)
+        echo "ERROR: DOTFILES_DEV_DIR must not contain newlines" >&2
+        return 1
+        ;;
+      /*)
+        local d="$DOTFILES_DEV_DIR"
+        while [ "$d" != "/" ] && [ "${d%/}" != "$d" ]; do
+          d="${d%/}"
+        done
+        printf '%s\n' "$d"
+        ;;
+      *)
+        echo "ERROR: DOTFILES_DEV_DIR must be an absolute path (got: $DOTFILES_DEV_DIR)" >&2
+        return 1
+        ;;
+    esac
+  else
+    _dev_dir
+  fi
+}
+
 _pull_all_report() {
   printf '  %-20s  %s\n' "$1" "$2"
 }
@@ -96,6 +124,69 @@ _pull_all_upstream_deleted() {
   [ "$rc" -eq 2 ]
 }
 
+# Sync a single repository (ordinary checkout or linked worktree).
+# Returns 0 on success/skip, 1 on failure (recording diagnostics in _pull_all_failures).
+_pull_all_sync_repo() {
+  local repo="$1"
+  [ -e "$repo/.git" ] || [ -L "$repo/.git" ] || return 0
+  local name remote_output upstream output rc
+  name="$(basename "$repo")"
+  if ! output="$(git -C "$repo" rev-parse --is-inside-work-tree 2>&1)"; then
+    _pull_all_failure "$name" "$(tail -1 <<< "$output")"
+    return 1
+  fi
+  if ! remote_output="$(git -C "$repo" remote -v 2>&1)"; then
+    _pull_all_failure "$name" "$(tail -1 <<< "$remote_output")"
+    return 1
+  fi
+  [ -n "$remote_output" ] || return 0
+  upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" \
+    || upstream=""
+  rc=0
+  _pull_all_is_linked_worktree "$repo" || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    _pull_all_failure "$name" "Cannot resolve Git worktree layout; not pulled"
+    return 1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    rc=0
+    # Detached or upstream-less linked worktrees still fetch their default
+    # remote; nothing here ever moves HEAD, the index, or the files.
+    output="$(git -C "$repo" fetch --prune 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      _pull_all_report "$name" \
+        "Fetched only (linked worktree${upstream:+ tracking $upstream}; not pulled)"
+      return 0
+    else
+      _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
+      return 1
+    fi
+  fi
+  if [ -z "$upstream" ]; then
+    _pull_all_report "$name" "No upstream branch; skipped"
+    return 0
+  fi
+  rc=0
+  # --prune: a branch deleted on origin (delete-on-merge after its PR lands)
+  # leaves a stale remote-tracking ref that makes every plain pull fail with
+  # "no such ref was fetched" until something prunes it — which used to be
+  # only the daily git-hygiene timer, so launches failed until the next
+  # morning and then silently worked again.
+  output="$(git -C "$repo" pull --ff-only --prune 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    _pull_all_report "$name" "$(tail -1 <<< "$output")"
+    return 0
+  elif grep -q 'no such ref was fetched' <<< "$output" \
+    && _pull_all_upstream_deleted "$repo"; then
+    _pull_all_report "$name" \
+      "Upstream branch deleted on origin ($upstream); skipped — switch to the default branch"
+    return 0
+  else
+    _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
+    return 1
+  fi
+}
+
 # Linked worktrees may belong to another session, so only fetch into their
 # shared repository. Keep sync sequential because linked worktrees share refs
 # and objects. Preserve failures for callers that continue after a failed sync.
@@ -107,67 +198,43 @@ pull-all() {
     echo "Dev directory not found: $dev_dir"
     return 1
   fi
-  local failed=0 remote_output upstream output
-  local repo name rc
+  local failed=0 repo seen already_synced companion_dev_dir companion_prefix
+  local -a synced_repos=() companion_repos=()
   for repo in "$dev_dir"/*/; do
     [ -e "$repo/.git" ] || [ -L "$repo/.git" ] || continue
-    name="$(basename "$repo")"
-    if ! output="$(git -C "$repo" rev-parse --is-inside-work-tree 2>&1)"; then
-      failed=1
-      _pull_all_failure "$name" "$(tail -1 <<< "$output")"
-      continue
-    fi
-    if ! remote_output="$(git -C "$repo" remote -v 2>&1)"; then
-      failed=1
-      _pull_all_failure "$name" "$(tail -1 <<< "$remote_output")"
-      continue
-    fi
-    [ -n "$remote_output" ] || continue
-    upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" \
-      || upstream=""
-    rc=0
-    _pull_all_is_linked_worktree "$repo" || rc=$?
-    if [ "$rc" -gt 1 ]; then
-      failed=1
-      _pull_all_failure "$name" "Cannot resolve Git worktree layout; not pulled"
-      continue
-    fi
-    if [ "$rc" -eq 0 ]; then
-      rc=0
-      # Detached or upstream-less linked worktrees still fetch their default
-      # remote; nothing here ever moves HEAD, the index, or the files.
-      output="$(git -C "$repo" fetch --prune 2>&1)" || rc=$?
-      if [ "$rc" -eq 0 ]; then
-        _pull_all_report "$name" \
-          "Fetched only (linked worktree${upstream:+ tracking $upstream}; not pulled)"
-      else
-        failed=1
-        _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
-      fi
-      continue
-    fi
-    if [ -z "$upstream" ]; then
-      _pull_all_report "$name" "No upstream branch; skipped"
-      continue
-    fi
-    rc=0
-    # --prune: a branch deleted on origin (delete-on-merge after its PR lands)
-    # leaves a stale remote-tracking ref that makes every plain pull fail with
-    # "no such ref was fetched" until something prunes it — which used to be
-    # only the daily git-hygiene timer, so launches failed until the next
-    # morning and then silently worked again.
-    output="$(git -C "$repo" pull --ff-only --prune 2>&1)" || rc=$?
-    if [ "$rc" -eq 0 ]; then
-      _pull_all_report "$name" "$(tail -1 <<< "$output")"
-    elif grep -q 'no such ref was fetched' <<< "$output" \
-      && _pull_all_upstream_deleted "$repo"; then
-      _pull_all_report "$name" \
-        "Upstream branch deleted on origin ($upstream); skipped — switch to the default branch"
-    else
-      failed=1
-      _pull_all_failure "$name" "$(_pull_all_git_error "$output")"
-    fi
+    synced_repos+=("$repo")
+    _pull_all_sync_repo "$repo" || failed=1
   done
+  if ! companion_dev_dir="$(_companion_dev_dir)"; then
+    failed=1
+    _pull_all_failure "DOTFILES_DEV_DIR" "Invalid DOTFILES_DEV_DIR (must be an absolute single-line path)"
+  else
+    companion_prefix="${companion_dev_dir%/}"
+    companion_repos=(
+      "$companion_prefix/claude-memory"
+      "${CODEX_MEMORY_REPO:-$companion_prefix/codex-memory}"
+      "${AGY_MEMORY_REPO:-$companion_prefix/agy-memory}"
+    )
+    for repo in "${companion_repos[@]}"; do
+      while [ "$repo" != "/" ] && [ "${repo%/}" != "$repo" ]; do
+        repo="${repo%/}"
+      done
+      [ -d "$repo" ] || continue
+      [ -e "$repo/.git" ] || [ -L "$repo/.git" ] || continue
+      already_synced=0
+      if [ "${#synced_repos[@]}" -gt 0 ]; then
+        for seen in "${synced_repos[@]}"; do
+          if [ "$seen" -ef "$repo" ]; then
+            already_synced=1
+            break
+          fi
+        done
+      fi
+      [ "$already_synced" -eq 0 ] || continue
+      synced_repos+=("$repo")
+      _pull_all_sync_repo "$repo" || failed=1
+    done
+  fi
   return "$failed"
 }
 
@@ -390,8 +457,8 @@ _memory_snapshot_upstream() {
 
 sync-memory() {
   local dev_dir
-  dev_dir="$(_dev_dir)"
-  local mem_repo="$dev_dir/claude-memory"
+  dev_dir="$(_companion_dev_dir)" || return 1
+  local mem_repo="${dev_dir%/}/claude-memory"
   if [ ! -e "$mem_repo/.git" ] && [ ! -L "$mem_repo/.git" ]; then
     return 0
   fi
@@ -521,8 +588,10 @@ _check_critical_symlinks() {
   done
   if [ "$broken" -eq 1 ]; then
     echo "Critical symlinks broken — attempting auto-repair..."
-    if [ -f "$(_dev_dir)/claude-memory/bootstrap.sh" ]; then
-      bash "$(_dev_dir)/claude-memory/bootstrap.sh" && echo "Repair complete." || echo "Repair failed — run bootstrap.sh manually."
+    local companion_dir=""
+    companion_dir="$(_companion_dev_dir)" || companion_dir=""
+    if [ -n "$companion_dir" ] && [ -f "${companion_dir%/}/claude-memory/bootstrap.sh" ]; then
+      bash "${companion_dir%/}/claude-memory/bootstrap.sh" && echo "Repair complete." || echo "Repair failed — run bootstrap.sh manually."
     elif [ -f "$(_dev_dir)/dotfiles/setup.sh" ]; then
       bash "$(_dev_dir)/dotfiles/setup.sh" --repair && echo "Repair complete." || echo "Repair failed — run setup.sh --repair manually."
     else
@@ -944,8 +1013,13 @@ cx() {
 
   # Reapply portable private defaults after the repo sync without replacing the
   # machine-local config that holds project trust and integration settings.
-  local codex_memory_bootstrap
-  codex_memory_bootstrap="${CODEX_MEMORY_REPO:-$(_dev_dir)/codex-memory}/bootstrap.sh"
+  local codex_memory_bootstrap codex_companion_dir
+  if [ -n "${CODEX_MEMORY_REPO:-}" ]; then
+    codex_memory_bootstrap="$CODEX_MEMORY_REPO/bootstrap.sh"
+  else
+    codex_companion_dir="$(_companion_dev_dir)" || return 1
+    codex_memory_bootstrap="${codex_companion_dir%/}/codex-memory/bootstrap.sh"
+  fi
   if [ -f "$codex_memory_bootstrap" ] \
     && ! bash "$codex_memory_bootstrap"; then
     echo "⚠ Codex private defaults could not be applied — continuing with the existing local config." >&2
@@ -1100,8 +1174,13 @@ agy() {
   done
   set -- "${normalized_args[@]}"
 
-  local agy_memory_bootstrap
-  agy_memory_bootstrap="${AGY_MEMORY_REPO:-$(_dev_dir)/agy-memory}/bootstrap.sh"
+  local agy_memory_bootstrap agy_companion_dir
+  if [ -n "${AGY_MEMORY_REPO:-}" ]; then
+    agy_memory_bootstrap="$AGY_MEMORY_REPO/bootstrap.sh"
+  else
+    agy_companion_dir="$(_companion_dev_dir)" || return 1
+    agy_memory_bootstrap="${agy_companion_dir%/}/agy-memory/bootstrap.sh"
+  fi
   if [ -f "$agy_memory_bootstrap" ] \
     && ! bash "$agy_memory_bootstrap"; then
     echo "⚠ Antigravity private defaults could not be applied — continuing with the existing local config." >&2

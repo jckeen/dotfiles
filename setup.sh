@@ -52,14 +52,9 @@ DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
 # recomputing realpath per-file (once per managed link) would be pure overhead.
 DOTFILES_REAL="$(realpath "$DOTFILES_DIR" 2>/dev/null || echo "$DOTFILES_DIR")"
 HOME_DIR="$HOME"
-# Dev dir: derived from dotfiles repo location (parent of this repo).
-# Defined early so it can be used throughout (was previously set mid-script,
-# which broke any earlier reference — e.g. safe.directory ending up as "/claude-memory").
-DEV_DIR="$(dirname "$DOTFILES_DIR")"
-# Private companion repo (settings.json + identity + auto-memory). Optional.
-# Derived from DEV_DIR (not hardcoded ~/dev) so a checkout under ~/code etc.
-# still finds its sibling claude-memory repo.
-BOOTSTRAP_SCRIPT="$DEV_DIR/claude-memory/bootstrap.sh"
+# Dev dir (the parent holding the sibling repos) and the private companion
+# repo's bootstrap are set right after lib-checks.sh is sourced below, through
+# dotfiles_dev_dir, which the three check-* scripts share (#701).
 
 # Bootstrap exit code surfaced in final summary. 0 = not run or success.
 BOOTSTRAP_RC=0
@@ -82,6 +77,19 @@ if [ ! -f "$DOTFILES_DIR/lib-checks.sh" ]; then
 fi
 # shellcheck source=lib-checks.sh
 source "$DOTFILES_DIR/lib-checks.sh"
+
+# Checkout parent dir: where this dotfiles checkout (and project repos) live.
+# Always persisted to ~/.claude/dev-dir so launchers (cc/cx/agy) and
+# dotfiles-update keep finding <dev-dir>/dotfiles even when DOTFILES_DEV_DIR
+# redirects companion memory repos elsewhere (#701).
+CHECKOUT_DEV_DIR="$(dirname "$DOTFILES_DIR")"
+CHECKOUT_DEV_PREFIX="${CHECKOUT_DEV_DIR%/}"
+# Companion repo root: DOTFILES_DEV_DIR when set, else CHECKOUT_DEV_DIR.
+# Namespaced, not DEV_DIR, because DEV_DIR is a common ambient variable.
+COMPANION_DEV_DIR="$(dotfiles_dev_dir "$DOTFILES_DIR")" || exit 1
+COMPANION_DEV_PREFIX="${COMPANION_DEV_DIR%/}"
+# Private companion repo (settings.json + identity + auto-memory). Optional.
+BOOTSTRAP_SCRIPT="$COMPANION_DEV_PREFIX/claude-memory/bootstrap.sh"
 
 # Agent-service selection (issue #425): which of Claude Code, Codex, and
 # Antigravity this machine installs, links, and health-checks. Parsing,
@@ -207,26 +215,33 @@ run_health_audit() {
 
   echo ""
 
-  # ── Claude-memory symlinks (via bootstrap.sh --check) ──
+  # ── Claude-memory symlinks (via bootstrap.sh --check + memory-link check) ──
   echo "--- Claude-memory symlinks ---"
   if ! service_selected claude; then
     echo "  (Claude Code not selected — skipping claude-memory checks)"
-  elif [ -f "$BOOTSTRAP_SCRIPT" ]; then
-    if bash "$BOOTSTRAP_SCRIPT" --check; then
-      echo "  All claude-memory symlinks OK"
-    else
-      errors=$((errors + 1))
-      if [ "$mode" = "repair" ]; then
-        if [ "${DRY_RUN:-0}" = "1" ]; then
-          echo "  [DRY] would repair claude-memory symlinks via $BOOTSTRAP_SCRIPT"
-        else
-          echo "  Repairing claude-memory symlinks..."
-          bash "$BOOTSTRAP_SCRIPT" && echo "  Repaired." || echo "  Repair failed."
+  else
+    if [ -f "$BOOTSTRAP_SCRIPT" ]; then
+      if bash "$BOOTSTRAP_SCRIPT" --check; then
+        echo "  All claude-memory symlinks OK"
+      else
+        errors=$((errors + 1))
+        if [ "$mode" = "repair" ]; then
+          if [ "${DRY_RUN:-0}" = "1" ]; then
+            echo "  [DRY] would repair claude-memory symlinks via $BOOTSTRAP_SCRIPT"
+          else
+            echo "  Repairing claude-memory symlinks..."
+            bash "$BOOTSTRAP_SCRIPT" && echo "  Repaired." || echo "  Repair failed."
+          fi
         fi
       fi
+    else
+      echo "  (bootstrap.sh not found at $BOOTSTRAP_SCRIPT — skipping bootstrap.sh checks)"
     fi
-  else
-    echo "  (bootstrap.sh not found at $BOOTSTRAP_SCRIPT — skipping claude-memory checks)"
+    # Enforce project-memory symlink targets even when bootstrap.sh is absent (#701).
+    local ERRORS=0 WARNINGS=0
+    if ! check_claude_memory_links "$CHECKOUT_DEV_DIR" "$COMPANION_DEV_DIR" "$CLAUDE_DST"; then
+      errors=$((errors + ERRORS + WARNINGS))
+    fi
   fi
 
   echo ""
@@ -1914,13 +1929,12 @@ GITCONF
   fi
 
   # WSL-specific: mark dev repos as safe (idempotent — skip if already present).
-  # DEV_DIR is defined at the top of this script (C1 fix); reusing it here.
   # Write to .gitconfig.local, NOT --global: ~/.gitconfig is symlinked to this
   # repo's tracked .gitconfig, so `git config --global` would commit machine paths
   # (e.g. /home/<you>/dev/dotfiles) into the public repo. Same reasoning as the
   # gh credential-helper block below.
   if [[ "$PLATFORM" == "wsl" ]]; then
-    for _safe_dir in "$DOTFILES_DIR" "$DEV_DIR/claude-memory"; do
+    for _safe_dir in "$DOTFILES_DIR" "$COMPANION_DEV_PREFIX/claude-memory"; do
       git config --file "$DOTFILES_DIR/.gitconfig.local" --get-all safe.directory 2>/dev/null \
         | grep -Fxq "$_safe_dir" \
         || git config --file "$DOTFILES_DIR/.gitconfig.local" --add safe.directory "$_safe_dir"
@@ -2017,13 +2031,14 @@ else
   echo "  -> Shared scripts linked ($_tree_links entries)"
 fi
 
-# Dev dir already derived at top of script (C1) — write it out so all scripts
-# have a single source of truth.
+# Persist the checkout's parent dev dir so launchers and dotfiles-update always
+# find <dev-dir>/dotfiles, even when DOTFILES_DEV_DIR points companion repos
+# elsewhere (#701).
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  echo "  [DRY] would write $HOME_DIR/.claude/dev-dir ($DEV_DIR)"
+  echo "  [DRY] would write $HOME_DIR/.claude/dev-dir ($CHECKOUT_DEV_DIR)"
 else
-  echo "$DEV_DIR" > "$HOME_DIR/.claude/dev-dir"
-  echo "  -> dev-dir set to $DEV_DIR"
+  echo "$CHECKOUT_DEV_DIR" > "$HOME_DIR/.claude/dev-dir"
+  echo "  -> dev-dir set to $CHECKOUT_DEV_DIR"
 fi
 
 # Memory (optional private repo for persistent Claude memory)
@@ -2037,7 +2052,7 @@ fi
 # claude-memory/<project-basename>/memory, so durable facts are version-
 # controlled and synced. The source of truth lives in the repo; the symlink
 # points Claude at it.
-MEMORY_REPO="$DEV_DIR/claude-memory"
+MEMORY_REPO="$COMPANION_DEV_PREFIX/claude-memory"
 if ! service_selected claude; then
   echo "  -> Claude Code not selected: skipping Claude memory links (existing links left as-is)"
 elif [ -d "$MEMORY_REPO" ]; then
@@ -2067,9 +2082,11 @@ elif [ -d "$MEMORY_REPO" ]; then
     fi
     ln -sn "$src" "$dst"
   }
-  # The dev root itself (basename "dev"), then every immediate project under it.
-  link_project_memory "dev" "$(echo "$DEV_DIR" | sed 's|^/||; s|/|-|g')"
-  for _proj in "$DEV_DIR"/*/; do
+  # The dev root holding projects/dotfiles (key "dev"), then every immediate
+  # project under it. Anchored to CHECKOUT_DEV_DIR so DOTFILES_DEV_DIR only
+  # relocates companion memory storage, not the project tree keys (#701).
+  link_project_memory "dev" "$(echo "$CHECKOUT_DEV_DIR" | sed 's|^/||; s|/|-|g')"
+  for _proj in "$CHECKOUT_DEV_PREFIX"/*/; do
     [ -d "$_proj" ] || continue
     [ "$(basename "$_proj")" = "claude-memory" ] && continue  # the repo itself
     link_project_memory "$(basename "$_proj")" \
@@ -2163,7 +2180,9 @@ if service_selected codex; then
     echo "  -> Codex skills linked into ~/.agents/skills (legacy ~/.codex links retained for compatibility)"
   fi
 
-  CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/codex-memory}"
+  # Companion repo lookup: DOTFILES_DEV_DIR redirects this too (#701); an
+  # explicit CODEX_MEMORY_REPO still wins.
+  CODEX_MEMORY_REPO="${CODEX_MEMORY_REPO:-$COMPANION_DEV_PREFIX/codex-memory}"
   if [ -d "$CODEX_MEMORY_REPO" ]; then
     echo "  -> codex-memory private repo detected at $CODEX_MEMORY_REPO"
     if [ -f "$CODEX_MEMORY_REPO/bootstrap.sh" ]; then
@@ -2258,7 +2277,9 @@ if service_selected antigravity; then
     echo "  -> Antigravity hooks.json linked"
   fi
 
-  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$(dirname "$DOTFILES_DIR")/agy-memory}"
+  # Companion repo lookup: DOTFILES_DEV_DIR redirects it and its permissions
+  # overlay too (#701); an explicit AGY_MEMORY_REPO still wins.
+  AGY_MEMORY_REPO="${AGY_MEMORY_REPO:-$COMPANION_DEV_PREFIX/agy-memory}"
 
   # Permission baseline: curated allow/ask/deny rules plus proceed-in-sandbox
   # mode, merged into the machine-local ~/.gemini/antigravity-cli/settings.json
@@ -2662,7 +2683,7 @@ if [[ "$PLATFORM" == "wsl" ]]; then
   echo "  3. Add project repos to git safe.directory as needed (write to"
   echo "     .gitconfig.local, NOT --global: ~/.gitconfig is symlinked to the"
   echo "     public dotfiles repo, so --global would commit your machine path):"
-  echo "     git config --file ~/.gitconfig.local --add safe.directory $DEV_DIR/<repo>"
+  echo "     git config --file ~/.gitconfig.local --add safe.directory $CHECKOUT_DEV_DIR/<repo>"
 fi
 
 # ─── Final completion summary (M5) ───────────────────────────────────
