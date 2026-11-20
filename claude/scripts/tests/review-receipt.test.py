@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from unittest import mock
 
@@ -3983,6 +3984,1554 @@ with patch('datetime.datetime', wraps=datetime) as clock:
             stream.write('{"completed_at":"nonsense"}\n{\n\n')
         report = self.run_helper("stats", "--repo", str(self.repo))
         self.assertIn("unreadable ledger lines: 2", report)
+
+    # ─── clean-worktree committed reviews ──────────────────────────
+
+    def run_helper_env(self, *args, env=None, ok=True):
+        process = subprocess.run(
+            [sys.executable, str(HELPER), *args],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(process.returncode == 0, ok, process.stdout + process.stderr)
+        return process
+
+    def new_detached_worktree(self, name="clean-wt", ref="HEAD"):
+        wt = Path(self.tmp.name) / name
+        self.git("worktree", "add", "--quiet", "--detach", str(wt), ref)
+        return wt
+
+    def dirty_caller_runtime_files(self):
+        claude_dir = self.repo / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        (claude_dir / "settings.json").write_text('{"permissions":{}}\n')
+        (self.repo / ".env.local").write_text("SECRET_ENV_MARKER=topsecret\n")
+
+    def capture_clean(
+        self, wt, reviewer="codex", base="main", scope="committed", env=None, ok=True
+    ):
+        process = self.run_helper_env(
+            "capture",
+            "--repo",
+            str(wt),
+            "--receipt-repo",
+            str(self.repo),
+            "--base",
+            base,
+            "--scope",
+            scope,
+            "--reviewer",
+            reviewer,
+            env=env,
+            ok=ok,
+        )
+        return Path(process.stdout.strip()) / "snapshot.json" if ok else process
+
+    def test_clean_worktree_lane_routes_committed_and_refuses_uncommitted(self):
+        self.dirty_caller_runtime_files()
+        payload = json.loads(
+            self.run_helper(
+                "lane",
+                "--repo",
+                str(self.repo),
+                "--base",
+                "main",
+                "--scope",
+                "committed",
+                "--clean-worktree",
+            )
+        )
+        self.assertEqual(payload["tier"], 2)
+        self.assertEqual(payload["required_lane"], "antigravity")
+        self.assertFalse(self.receipts_dir().exists())
+
+        refused = self.run_helper_env(
+            "lane",
+            "--repo",
+            str(self.repo),
+            "--base",
+            "main",
+            "--scope",
+            "uncommitted",
+            "--clean-worktree",
+            ok=False,
+        )
+        self.assertIn("--clean-worktree requires --scope committed", refused.stderr)
+
+    def test_clean_worktree_happy_path_persists_in_caller_after_wt_removal(self):
+        self.git("checkout", "-q", "main")
+        (self.repo / "package.json").write_text('{"name":"demo"}\n')
+        self.git("add", "package.json")
+        self.git("commit", "-qm", "package baseline")
+        self.git("checkout", "-qb", "clean-feature")
+        (self.repo / "code.txt").write_text("clean worktree change\n")
+        self.git("commit", "-qam", "feature commit")
+
+        # Caller working tree holds untracked runtime files and dirty tracked state.
+        self.dirty_caller_runtime_files()
+        (self.repo / "package.json").write_text('{"name":"dirty"}\n')
+
+        wt = self.new_detached_worktree()
+        snapshot = self.capture_clean(wt, reviewer="codex", base="main")
+        self.assertTrue(snapshot.is_relative_to(self.receipts_dir()))
+        snap_data = json.loads(snapshot.read_bytes())
+        self.assertTrue(snap_data["clean_worktree"])
+        self.assertEqual(snap_data["capture_repository"], str(wt.resolve()))
+
+        self.run_helper("classify", "--snapshot", str(snapshot))
+        self.run_helper("verify", "--snapshot", str(snapshot))
+        self.claim(snapshot)
+        self.complete(snapshot)
+
+        receipt = self.receipts_dir() / "codex.json"
+        record = json.loads(receipt.read_bytes())
+        self.assertTrue(record["clean_worktree"])
+        self.assertNotIn("capture_repository", record)
+
+        # Removing the temporary detached worktree must not break `check`.
+        self.git("worktree", "remove", "--force", str(wt))
+        self.assertFalse(wt.exists())
+        self.check()
+
+        entry = json.loads((self.receipts_dir() / "ledger.jsonl").read_text().splitlines()[-1])
+        self.assertEqual(entry["head"], self.git("rev-parse", "HEAD"))
+        self.assertEqual(entry["outcome"], "passed")
+
+    def test_clean_worktree_refusals(self):
+        # Establish an existing valid receipt; failed clean-worktree captures
+        # must refuse BEFORE invalidating it when --scope is invalid.
+        self.complete(self.begin(reviewer="codex"))
+        self.check()
+        wt = self.new_detached_worktree()
+        for bad_scope in ("uncommitted", "auto"):
+            with self.subTest(scope=bad_scope):
+                refused = self.capture_clean(wt, scope=bad_scope, ok=False)
+                self.assertIn("--receipt-repo requires --scope committed", refused.stderr)
+                self.check()
+
+        # Same worktree as --repo and --receipt-repo must fail.
+        same = self.run_helper_env(
+            "capture",
+            "--repo",
+            str(self.repo),
+            "--receipt-repo",
+            str(self.repo),
+            "--base",
+            "main",
+            "--scope",
+            "committed",
+            "--reviewer",
+            "codex",
+            ok=False,
+        )
+        self.assertIn("--receipt-repo must name a different worktree", same.stderr)
+
+        # Foreign unrelated repository must fail.
+        foreign = Path(self.tmp.name) / "foreign"
+        foreign.mkdir()
+        subprocess.check_call(["git", "-C", str(foreign), "init", "-q", "-b", "main"])
+        subprocess.check_call(["git", "-C", str(foreign), "config", "user.name", "fixture"])
+        subprocess.check_call(["git", "-C", str(foreign), "config", "user.email", "f@example.test"])
+        (foreign / "f.txt").write_text("hi\n")
+        subprocess.check_call(["git", "-C", str(foreign), "add", "f.txt"])
+        subprocess.check_call(["git", "-C", str(foreign), "commit", "-qm", "init"])
+        rel_foreign = self.run_helper_env(
+            "capture",
+            "--repo",
+            str(foreign),
+            "--receipt-repo",
+            str(self.repo),
+            "--base",
+            "main",
+            "--scope",
+            "committed",
+            "--reviewer",
+            "codex",
+            ok=False,
+        )
+        self.assertIn("common directory", rel_foreign.stderr)
+
+        # Mismatched HEAD between worktree and caller fails.
+        wt_old = self.new_detached_worktree("wt-old", ref="main")
+        mismatch = self.capture_clean(wt_old, ok=False)
+        self.assertIn("HEAD does not match", mismatch.stderr)
+
+        # Dirty tracked file, untracked file, or gitignored .env inside wt fails.
+        (wt / ".gitignore").write_text(".env*\n")
+        subprocess.check_call(["git", "-C", str(wt), "add", ".gitignore"])
+        (wt / "code.txt").write_text("dirty inside wt\n")
+        dirty_wt = self.capture_clean(wt, ok=False)
+        self.assertIn("clean worktree", dirty_wt.stderr)
+        subprocess.check_call(["git", "-C", str(wt), "reset", "--hard", "-q", "HEAD"])
+
+        (wt / "untracked.txt").write_text("oops\n")
+        untracked_wt = self.capture_clean(wt, ok=False)
+        self.assertIn("untracked or ignored", untracked_wt.stderr)
+        (wt / "untracked.txt").unlink()
+
+        (wt / ".env").write_text("SECRET=1\n")
+        ignored_wt = self.capture_clean(wt, ok=False)
+        self.assertIn("untracked or ignored", ignored_wt.stderr)
+        (wt / ".env").unlink()
+
+        # Modifying wt or advancing caller HEAD mid-review fails verify/complete.
+        snapshot = self.capture_clean(wt)
+        self.claim(snapshot)
+        (wt / "oops.txt").write_text("late\n")
+        self.run_helper("verify", "--snapshot", str(snapshot), ok=False)
+        self.complete(snapshot, ok=False)
+        (wt / "oops.txt").unlink()
+
+        snapshot2 = self.capture_clean(wt)
+        self.claim(snapshot2)
+        (self.repo / "extra.txt").write_text("caller moved\n")
+        self.git("add", "extra.txt")
+        self.git("commit", "-qm", "caller advance")
+        self.run_helper("verify", "--snapshot", str(snapshot2), ok=False)
+        self.complete(snapshot2, ok=False)
+
+    def test_clean_worktree_live_runtime_guard(self):
+        self.git("checkout", "-q", "main")
+        codex_dir = self.repo / "codex"
+        codex_dir.mkdir()
+        (codex_dir / "AGENTS.md").write_text("# Agents\n")
+        self.git("add", "codex/AGENTS.md")
+        self.git("commit", "-qm", "add live surface")
+        self.git("checkout", "-qb", "live-branch")
+        (self.repo / "code.txt").write_text("live change\n")
+        self.git("commit", "-qam", "change code")
+
+        fake_home = Path(self.tmp.name) / "home"
+        (fake_home / ".codex").mkdir(parents=True)
+        (fake_home / ".codex" / "AGENTS.md").symlink_to(self.repo / "codex" / "AGENTS.md")
+        env = dict(os.environ, HOME=str(fake_home))
+
+        # Untracked .claude/settings.json passes when live AGENTS.md is clean.
+        self.dirty_caller_runtime_files()
+        wt = self.new_detached_worktree()
+        snapshot = self.capture_clean(wt, env=env)
+        self.assertTrue(snapshot.exists())
+
+        # Uncommitted edit to symlinked live AGENTS.md fails capture.
+        (self.repo / "codex" / "AGENTS.md").write_text("# Edited locally\n")
+        refused = self.capture_clean(wt, env=env, ok=False)
+        self.assertIn("dirty live reviewer or gate surface", refused.stderr)
+
+    def test_clean_worktree_tamper_checks(self):
+        wt = self.new_detached_worktree()
+        snapshot = self.capture_clean(wt)
+        self.claim(snapshot)
+        self.complete(snapshot)
+        self.git("worktree", "remove", "--force", str(wt))
+        self.check()
+
+        receipt = self.receipts_dir() / "codex.json"
+        record = json.loads(receipt.read_bytes())
+
+        # Malformed or false clean_worktree fails.
+        for bad_flag in (False, None, "yes"):
+            tampered = json.loads(json.dumps(record))
+            tampered["clean_worktree"] = bad_flag
+            receipt.write_text(json.dumps(tampered))
+            self.check(False)
+
+        # Dropping clean_worktree when caller is dirty falls back to normal check and fails.
+        self.dirty_caller_runtime_files()
+        dropped = json.loads(json.dumps(record))
+        dropped.pop("clean_worktree")
+        receipt.write_text(json.dumps(dropped))
+        self.check(False)
+        shutil.rmtree(self.repo / ".claude")
+        (self.repo / ".env.local").unlink()
+
+        # Injecting capture_repository fails.
+        injected = json.loads(json.dumps(record))
+        injected["capture_repository"] = str(self.tmp.name)
+        receipt.write_text(json.dumps(injected))
+        self.assertIn("capture_repository", self.check_refusal())
+
+        # Altering artifact fields or classification fails.
+        mutations = [
+            ("head", "0" * 40),
+            ("tree", "0" * 40),
+            ("diff_sha256", "0" * 64),
+            ("review_diff_sha256", "0" * 64),
+            ("changed_paths", ["invented.txt"]),
+            ("changed_modes", {"invented.txt": ["missing", "100644"]}),
+        ]
+        for field, value in mutations:
+            tampered = json.loads(json.dumps(record))
+            tampered["artifact"][field] = value
+            receipt.write_text(json.dumps(tampered))
+            self.check(False)
+
+        for base_field in ("commit", "merge_base"):
+            tampered = json.loads(json.dumps(record))
+            tampered["artifact"]["base"][base_field] = "0" * 40
+            receipt.write_text(json.dumps(tampered))
+            self.check(False)
+
+        for bad_ref in ("", None, 123):
+            tampered = json.loads(json.dumps(record))
+            tampered["artifact"]["base"]["ref"] = bad_ref
+            receipt.write_text(json.dumps(tampered))
+            self.check(False)
+
+        tampered = json.loads(json.dumps(record))
+        tampered["classification"]["required_lane"] = "any"
+        receipt.write_text(json.dumps(tampered))
+        self.check(False)
+
+        receipt.write_text(json.dumps(record))
+        self.check()
+
+        # Renaming the old base branch must NOT invalidate a pinned receipt when the
+        # current shipping base still matches the pinned base commit and merge_base.
+        self.git("branch", "-m", "main", "trunk")
+        self.check(True, "--base", "trunk")
+        self.git("branch", "-m", "trunk", "main")
+
+        # Copying a clean-worktree receipt to a sibling worktree fails.
+        sibling = self.new_detached_worktree("sibling-wt")
+        sib_receipts = (
+            Path(
+                subprocess.check_output(
+                    ["git", "-C", str(sibling), "rev-parse", "--absolute-git-dir"], text=True
+                ).strip()
+            )
+            / "review-receipts"
+        )
+        sib_receipts.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(receipt, sib_receipts / "codex.json")
+        shutil.copy2(
+            self.receipts_dir() / "codex.attempt.json", sib_receipts / "codex.attempt.json"
+        )
+        sib_check = self.run_helper_env(
+            "check",
+            "--repo",
+            str(sibling),
+            "--head",
+            self.git("rev-parse", "HEAD"),
+            ok=False,
+        )
+        self.assertNotEqual(sib_check.returncode, 0)
+
+        # Forging clean_worktree: true onto a normal receipt fails attempt check.
+        self.complete(self.begin(reviewer="codex"))
+        normal = json.loads(receipt.read_bytes())
+        self.assertNotIn("clean_worktree", normal)
+        normal["clean_worktree"] = True
+        receipt.write_text(json.dumps(normal))
+        self.assertIn("superseded", self.check_refusal())
+
+    def test_clean_worktree_block_and_retain_retire_normal_receipts(self):
+        # Prior normal approval must be retired by a clean-worktree block marker.
+        self.complete(self.begin(reviewer="antigravity"))
+        self.check()
+
+        self.dirty_caller_runtime_files()
+        wt = self.new_detached_worktree()
+        snap = self.capture_clean(wt, reviewer="codex")
+
+        output = Path(self.tmp.name) / "clean-review.json"
+        output.write_text('{"verdict":"block"}\n')
+        kept = Path(self.retain(snap, output))
+        self.assertTrue(kept.is_relative_to(self.receipts_dir() / "reviews"))
+        self.assertTrue(kept.exists())
+
+        self.block(snap)
+        self.assertEqual(len(self.block_markers()), 1)
+        self.check(False)
+
+        # A subsequent clean-worktree approval after the block passes.
+        snap2 = self.capture_clean(wt, reviewer="codex")
+        self.claim(snap2)
+        self.complete(snap2)
+        self.git("worktree", "remove", "--force", str(wt))
+        self.check()
+
+    def test_clean_worktree_committed_instruction_links_and_autocrlf(self):
+        # Unchanged AGENTS.md -> CLAUDE.md passes complete & check with core.autocrlf=true.
+        self.git("checkout", "-q", "main")
+        (self.repo / "CLAUDE.md").write_text("# Rules\nline 2\n")
+        (self.repo / "AGENTS.md").symlink_to("CLAUDE.md")
+        self.git("add", "CLAUDE.md", "AGENTS.md")
+        self.git("commit", "-qm", "instruction link")
+        self.git("checkout", "-qb", "link-feature")
+        (self.repo / "code.txt").write_text("after link\n")
+        self.git("commit", "-qam", "feature commit")
+        self.git("config", "core.autocrlf", "true")
+
+        wt = self.new_detached_worktree()
+        snap = self.capture_clean(wt, base="main")
+        self.claim(snap)
+        self.complete(snap)
+        self.git("worktree", "remove", "--force", str(wt))
+        self.check()
+
+        # Unsafe unchanged instruction link targets must fail both capture and lane --clean-worktree.
+        bad_targets = (
+            ("trailing-slash", "CLAUDE.md/", "target must be relative"),
+            ("trailing-dot", "CLAUDE.md/.", "target must resolve"),
+            ("missing-dotdot", "missing/../CLAUDE.md", "existing directories"),
+        )
+        for label, target, expected in bad_targets:
+            with self.subTest(label=label):
+                base_branch = f"bad-base-{label}"
+                self.git("checkout", "-qb", base_branch, "main")
+                (self.repo / "AGENTS.md").unlink()
+                (self.repo / "AGENTS.md").symlink_to(target)
+                self.git("add", "AGENTS.md")
+                self.git("commit", "-qm", f"bad link {label}")
+                self.git("checkout", "-qb", f"bad-feat-{label}", base_branch)
+                (self.repo / "code.txt").write_text(f"work {label}\n")
+                self.git("commit", "-qam", f"work {label}")
+                lane_bad = self.run_helper_env(
+                    "lane",
+                    "--repo",
+                    str(self.repo),
+                    "--base",
+                    base_branch,
+                    "--scope",
+                    "committed",
+                    "--clean-worktree",
+                    ok=False,
+                )
+                self.assertIn(expected, lane_bad.stderr)
+                wt_bad = self.new_detached_worktree(f"wt-{label}")
+                cap_bad = self.capture_clean(wt_bad, base=base_branch, ok=False)
+                self.assertIn("unsupported instruction symlink", cap_bad.stderr)
+                self.git("worktree", "remove", "--force", str(wt_bad))
+
+        # Symlink ancestor traversal in committed tree fails.
+        self.git("checkout", "-qb", "bad-base-anc", "main")
+        (self.repo / "realdir").mkdir(exist_ok=True)
+        (self.repo / "realdir" / "CLAUDE.md").write_text("# Nested\n")
+        (self.repo / "symdir").symlink_to("realdir")
+        (self.repo / "AGENTS.md").unlink()
+        (self.repo / "AGENTS.md").symlink_to("symdir/CLAUDE.md")
+        self.git("add", "realdir/CLAUDE.md", "symdir", "AGENTS.md")
+        self.git("commit", "-qm", "symlink ancestor")
+        self.git("checkout", "-qb", "bad-feat-anc", "bad-base-anc")
+        (self.repo / "code.txt").write_text("work anc\n")
+        self.git("commit", "-qam", "work anc")
+        lane_anc = self.run_helper_env(
+            "lane",
+            "--repo",
+            str(self.repo),
+            "--base",
+            "bad-base-anc",
+            "--scope",
+            "committed",
+            "--clean-worktree",
+            ok=False,
+        )
+        self.assertIn("symlink ancestor", lane_anc.stderr)
+        wt_anc = self.new_detached_worktree("wt-anc")
+        cap_anc = self.capture_clean(wt_anc, base="bad-base-anc", ok=False)
+        self.assertIn("unsupported instruction symlink", cap_anc.stderr)
+        self.git("worktree", "remove", "--force", str(wt_anc))
+
+    def test_clean_worktree_materialize_avoids_smudge_filters_and_unsafe_trees(self):
+        marker = Path(self.tmp.name) / "smudge-marker"
+        self.git("checkout", "-q", "main")
+        (self.repo / ".gitattributes").write_text("*.txt filter=demo\n")
+        (self.repo / "code.txt").write_text("filtered line\n")
+        self.git("add", ".gitattributes", "code.txt")
+        self.git("commit", "-qm", "attr baseline")
+        self.git("checkout", "-qb", "mat-feature")
+        (self.repo / "code.txt").write_text("updated raw bytes\n")
+        self.git("commit", "-qam", "feature commit")
+        self.git("config", "filter.demo.smudge", f"sh -c 'touch \"{marker}\"; cat'")
+        self.git("config", "filter.demo.clean", "cat")
+
+        head = self.git("rev-parse", "HEAD")
+        wt = Path(self.tmp.name) / "wt-noc"
+        self.git("worktree", "add", "--no-checkout", "--quiet", "--detach", str(wt), head)
+        self.run_helper(
+            "materialize",
+            "--repo",
+            str(wt),
+            "--receipt-repo",
+            str(self.repo),
+            "--head",
+            head,
+        )
+        self.assertFalse(marker.exists())
+        self.assertEqual((wt / "code.txt").read_text(), "updated raw bytes\n")
+        snap = self.capture_clean(wt, base="main")
+        self.assertTrue(snap.exists())
+        self.git("worktree", "remove", "--force", str(wt))
+
+        # Refuses non-empty directory before materialization.
+        wt2 = Path(self.tmp.name) / "wt-dirty"
+        self.git("worktree", "add", "--no-checkout", "--quiet", "--detach", str(wt2), head)
+        (wt2 / "stray.txt").write_text("unexpected\n")
+        bad = self.run_helper_env(
+            "materialize",
+            "--repo",
+            str(wt2),
+            "--receipt-repo",
+            str(self.repo),
+            "--head",
+            head,
+            ok=False,
+        )
+        self.assertIn("contain only .git", bad.stderr)
+        shutil.rmtree(wt2)
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "prune"], check=False)
+
+    def test_clean_worktree_live_runtime_catches_symlink_escape_and_codex_home(self):
+        self.git("checkout", "-q", "main")
+        (self.repo / "codex").mkdir()
+        (self.repo / "codex" / "AGENTS.md").write_text("# Committed\n")
+        self.git("add", "codex/AGENTS.md")
+        self.git("commit", "-qm", "committed codex dir")
+        self.git("checkout", "-qb", "live-sec")
+        (self.repo / "code.txt").write_text("sec work\n")
+        self.git("commit", "-qam", "work")
+
+        # 1. Replacing REPO/codex with a symlink outside REPO while ~/.codex/AGENTS.md -> REPO/codex/AGENTS.md must refuse.
+        external = Path(self.tmp.name) / "external-codex"
+        external.mkdir()
+        (external / "AGENTS.md").write_text("# External injected\n")
+        shutil.rmtree(self.repo / "codex")
+        (self.repo / "codex").symlink_to(external)
+
+        fake_home = Path(self.tmp.name) / "escape-home"
+        (fake_home / ".codex").mkdir(parents=True)
+        (fake_home / ".codex" / "AGENTS.md").symlink_to(self.repo / "codex" / "AGENTS.md")
+        wt = self.new_detached_worktree()
+        esc = self.capture_clean(wt, env=dict(os.environ, HOME=str(fake_home)), ok=False)
+        self.assertIn("receipt repository", esc.stderr)
+
+        # Restore REPO/codex directory so CODEX_HOME checks run cleanly.
+        (self.repo / "codex").unlink()
+        self.git("checkout", "--", "codex")
+
+        # 2. CODEX_HOME=REPO/.codex with untracked or modified AGENTS.md must refuse even when HOME has no link.
+        other_home = Path(self.tmp.name) / "clean-home"
+        other_home.mkdir()
+        local_codex = self.repo / ".codex"
+        local_codex.mkdir()
+        (local_codex / "AGENTS.md").write_text("# Shadow CODEX_HOME\n")
+        env_codex = dict(os.environ, HOME=str(other_home), CODEX_HOME=str(local_codex))
+        ref_untracked = self.capture_clean(wt, env=env_codex, ok=False)
+        self.assertIn("dirty live reviewer or gate surface", ref_untracked.stderr)
+
+        self.git("add", ".codex/AGENTS.md")
+        self.git("commit", "-qm", "commit dot-codex")
+        head_new = self.git("rev-parse", "HEAD")
+        wt2 = self.new_detached_worktree("wt-codex-home", ref=head_new)
+        (local_codex / "AGENTS.md").write_text("# Edited tracked CODEX_HOME\n")
+        ref_modified = self.capture_clean(wt2, env=env_codex, ok=False)
+        self.assertIn("dirty live reviewer or gate surface", ref_modified.stderr)
+
+    def test_clean_worktree_ignores_caller_gitattributes_and_supports_relative_base(self):
+        self.git("checkout", "-q", "main")
+        (self.repo / "code.txt").write_text("base\n")
+        self.git("commit", "--allow-empty", "-qm", "upstream anchor")
+        self.git("checkout", "-qb", "attr-rel-feature", "main")
+        (self.repo / "code.txt").write_text("feature body line\n")
+        self.git("commit", "-qam", "feature commit")
+
+        # Untracked/dirty caller .gitattributes with `*.txt -diff` must not alter
+        # committed object classification, completion, or `check`.
+        (self.repo / ".gitattributes").write_text("*.txt -diff\n")
+        lane_out = json.loads(
+            self.run_helper(
+                "lane",
+                "--repo",
+                str(self.repo),
+                "--base",
+                "main",
+                "--scope",
+                "committed",
+                "--clean-worktree",
+            )
+        )
+        self.assertEqual(lane_out["tier"], 2)
+
+        # Configure upstream tracking so @{upstream} exists in caller but not detached wt.
+        bare = Path(self.tmp.name) / "bare.git"
+        subprocess.check_call(["git", "init", "-q", "--bare", "--initial-branch=main", str(bare)])
+        self.git("remote", "add", "origin", str(bare))
+        self.git("push", "-q", "origin", "main:main")
+        self.git("branch", "--set-upstream-to=origin/main", "attr-rel-feature")
+
+        wt = self.new_detached_worktree()
+        snap = self.capture_clean(wt, base="@{upstream}")
+        self.claim(snap)
+        self.complete(snap)
+        self.git("worktree", "remove", "--force", str(wt))
+        self.check(True, "--base", "@{upstream}")
+
+    def test_clean_worktree_materialize_rejects_git_routing_and_preserves_caller_index(self):
+        self.git("checkout", "-q", "main")
+        (self.repo / "code.txt").write_text("base routing\n")
+        self.git("commit", "-qam", "base")
+        self.git("checkout", "-qb", "index-routing-feature")
+        (self.repo / "code.txt").write_text("committed feature\n")
+        self.git("commit", "-qam", "feature commit")
+
+        # Keep a staged-only edit in the caller index that is NOT in HEAD.
+        (self.repo / "staged-only.txt").write_text("staged work in caller\n")
+        self.git("add", "staged-only.txt")
+        caller_index = self.repo / ".git/index"
+        before_index = caller_index.read_bytes()
+        before_stage = self.git("ls-files", "--stage", "staged-only.txt")
+        self.assertIn("staged-only.txt", before_stage)
+
+        head = self.git("rev-parse", "HEAD")
+        wt = Path(self.tmp.name) / "wt-index-guard"
+        self.git("worktree", "add", "--no-checkout", "--quiet", "--detach", str(wt), head)
+
+        alt_index = Path(self.tmp.name) / "alt-index"
+        for idx_target in (caller_index, alt_index):
+            with self.subTest(idx=str(idx_target)):
+                res = self.run_helper_env(
+                    "materialize",
+                    "--repo",
+                    str(wt),
+                    "--receipt-repo",
+                    str(self.repo),
+                    "--head",
+                    head,
+                    env=dict(os.environ, GIT_INDEX_FILE=str(idx_target)),
+                    ok=False,
+                )
+                self.assertIn("GIT_INDEX_FILE", res.stderr)
+                self.assertEqual(caller_index.read_bytes(), before_index)
+                self.assertFalse(alt_index.exists())
+
+        # Normal materialization initializes only the temp worktree's index and leaves caller intact.
+        self.run_helper(
+            "materialize",
+            "--repo",
+            str(wt),
+            "--receipt-repo",
+            str(self.repo),
+            "--head",
+            head,
+        )
+        self.assertEqual(caller_index.read_bytes(), before_index)
+        self.assertEqual(self.git("ls-files", "--stage", "staged-only.txt"), before_stage)
+        self.assertFalse((wt / "staged-only.txt").exists())
+
+        bad_cap = self.run_helper_env(
+            "capture",
+            "--repo",
+            str(wt),
+            "--receipt-repo",
+            str(self.repo),
+            "--reviewer",
+            "codex",
+            "--scope",
+            "committed",
+            "--base",
+            "main",
+            env=dict(os.environ, GIT_DIR=str(self.repo / ".git")),
+            ok=False,
+        )
+        self.assertIn("GIT_DIR", bad_cap.stderr)
+        snap = self.capture_clean(wt, base="main")
+        self.assertTrue(snap.exists())
+        self.git("worktree", "remove", "--force", str(wt))
+
+    def test_clean_worktree_live_runtime_nested_legacy_skill_link(self):
+        self.git("checkout", "-q", "main")
+        ref_dir = self.repo / "agents" / "skills" / "demo" / "references"
+        ref_dir.mkdir(parents=True)
+        skill_md = self.repo / "agents" / "skills" / "demo" / "SKILL.md"
+        ref_md = ref_dir / "notes.md"
+        skill_md.write_text("# Demo Skill\n")
+        ref_md.write_text("# Committed notes\n")
+        self.git("add", "agents/skills/demo/SKILL.md", "agents/skills/demo/references/notes.md")
+        self.git("commit", "-qm", "legacy skill fixture")
+        self.git("checkout", "-qb", "nested-skill-feature")
+        (self.repo / "code.txt").write_text("feature work\n")
+        self.git("commit", "-qam", "work")
+
+        fake_home = Path(self.tmp.name) / "legacy-home"
+        live_ref_dir = fake_home / ".codex" / "skills" / "demo" / "references"
+        live_ref_dir.mkdir(parents=True)
+        (fake_home / ".codex" / "skills" / "demo" / "SKILL.md").symlink_to(skill_md)
+        (live_ref_dir / "notes.md").symlink_to(ref_md)
+
+        wt = self.new_detached_worktree()
+        env_home = dict(os.environ, HOME=str(fake_home))
+
+        ref_md.write_text("# Uncommitted dirty notes\n")
+        dirty_res = self.capture_clean(wt, env=env_home, ok=False)
+        self.assertIn("dirty live reviewer or gate surface", dirty_res.stderr)
+
+        self.git("checkout", "--", "agents/skills/demo/references/notes.md")
+        # Symlink loop inside installed skills must not loop infinitely.
+        (fake_home / ".codex" / "skills" / "demo" / "loop").symlink_to("../demo")
+        snap = self.capture_clean(wt, env=env_home)
+        self.assertTrue(snap.exists())
+
+        # Unreadable subdirectory under installed skills fails closed (skipped if running as root).
+        if hasattr(os, "geteuid") and os.geteuid() != 0:
+            locked = fake_home / ".codex" / "skills" / "locked"
+            locked.mkdir()
+            os.chmod(locked, 0o000)
+            try:
+                locked_res = self.capture_clean(wt, env=env_home, ok=False)
+                self.assertIn("cannot traverse live reviewer or gate surface", locked_res.stderr)
+            finally:
+                os.chmod(locked, 0o755)
+
+        self.git("worktree", "remove", "--force", str(wt))
+
+    def test_clean_worktree_live_runtime_symlink_parent_traversal_semantics(self):
+        self.git("checkout", "-q", "main")
+        (self.repo / "AGENTS.md").write_text("# Committed AGENTS\n")
+        (self.repo / ".codex").mkdir(exist_ok=True)
+        (self.repo / ".codex" / "AGENTS.md").write_text("# Committed CODEX_HOME AGENTS\n")
+        self.git("add", "AGENTS.md", ".codex/AGENTS.md")
+        self.git("commit", "-qm", "committed agents")
+        self.git("checkout", "-qb", "symlink-dotdot-feature")
+        (self.repo / "code.txt").write_text("feature work\n")
+        self.git("commit", "-qam", "work")
+
+        repo_real = self.repo.resolve()
+        child = repo_real.parent / "live-child"
+        child.mkdir(exist_ok=True)
+        entry = Path(self.tmp.name) / "entry"
+        entry.mkdir()
+        (entry / "link").symlink_to(child)
+
+        wt = self.new_detached_worktree()
+
+        # 1. Symlink targeting /entry/link/../<repo>/AGENTS.md where /entry/link -> <repo_parent>/live-child
+        # resolves physically to <repo>/AGENTS.md even though lexical abspath points to /entry/<repo>/AGENTS.md.
+        fake_home = Path(self.tmp.name) / "dotdot-home"
+        (fake_home / ".codex").mkdir(parents=True)
+        (fake_home / ".codex" / "AGENTS.md").symlink_to(
+            str(entry / "link" / ".." / repo_real.name / "AGENTS.md")
+        )
+        (self.repo / "AGENTS.md").write_text("# Dirty via symlink/../repo traversal\n")
+        res_link = self.capture_clean(wt, env=dict(os.environ, HOME=str(fake_home)), ok=False)
+        self.assertIn("dirty live reviewer or gate surface", res_link.stderr)
+        self.git("checkout", "--", "AGENTS.md")
+
+        # 2. Same symlink-then-parent traversal in CODEX_HOME must still catch dirty REPO/.codex/AGENTS.md.
+        clean_home = Path(self.tmp.name) / "clean-dotdot-home"
+        clean_home.mkdir()
+        (self.repo / ".codex" / "AGENTS.md").write_text("# Dirty via CODEX_HOME traversal\n")
+        codex_env = dict(
+            os.environ,
+            HOME=str(clean_home),
+            CODEX_HOME=str(entry / "link" / ".." / repo_real.name / ".codex"),
+        )
+        res_codex_home = self.capture_clean(wt, env=codex_env, ok=False)
+        self.assertIn("dirty live reviewer or gate surface", res_codex_home.stderr)
+        self.git("checkout", "--", ".codex/AGENTS.md")
+
+        # 3. Clean targets pass through the same traversal path.
+        snap_ok = self.capture_clean(wt, env=codex_env)
+        self.assertTrue(snap_ok.exists())
+
+        # 4. Real-directory traversal out of the repo (`<repo>/../outside/.codex`) stays outside and passes.
+        outside_codex = repo_real.parent / "outside" / ".codex"
+        outside_codex.mkdir(parents=True, exist_ok=True)
+        (outside_codex / "AGENTS.md").write_text("# Outside AGENTS\n")
+        outside_env = dict(
+            os.environ,
+            HOME=str(clean_home),
+            CODEX_HOME=str(repo_real / ".." / "outside" / ".codex"),
+        )
+        snap_out = self.capture_clean(wt, env=outside_env)
+        self.assertTrue(snap_out.exists())
+        self.git("worktree", "remove", "--force", str(wt))
+
+    def test_clean_worktree_live_runtime_checks_agents_override_and_executable(self):
+        self.git("checkout", "-q", "main")
+        (self.repo / "AGENTS.override.md").write_text("# Committed override\n")
+        (self.repo / "codex").mkdir(exist_ok=True)
+        committed_bin = self.repo / "codex" / "committed-codex"
+        committed_bin.write_text("#!/bin/sh\nexit 0\n")
+        committed_bin.chmod(0o755)
+        (self.repo / "bin").mkdir(exist_ok=True)
+        path_codex = self.repo / "bin" / "codex"
+        path_codex.symlink_to("../codex/committed-codex")
+        self.git("add", "AGENTS.override.md", "codex/committed-codex", "bin/codex")
+        self.git("commit", "-qm", "committed override, bin, and PATH launcher")
+        self.git("checkout", "-qb", "override-exec-feature")
+        (self.repo / "code.txt").write_text("feature work\n")
+        self.git("commit", "-qam", "work")
+
+        fake_home = Path(self.tmp.name) / "override-home"
+        (fake_home / ".codex").mkdir(parents=True)
+        (fake_home / ".codex" / "AGENTS.override.md").symlink_to(self.repo / "AGENTS.override.md")
+
+        wt = self.new_detached_worktree()
+        base_env = dict(os.environ, HOME=str(fake_home))
+
+        def cap_exec(wt_dir, *extra, env=base_env, ok=True):
+            res = self.run_helper_env(
+                "capture",
+                "--repo",
+                str(wt_dir),
+                "--receipt-repo",
+                str(self.repo),
+                "--reviewer",
+                "codex",
+                "--scope",
+                "committed",
+                "--base",
+                "main",
+                *extra,
+                env=env,
+                ok=ok,
+            )
+            return Path(res.stdout.strip()) if ok else res
+
+        def comp_exec(snap_dir, ok=True):
+            return self.run_helper_env(
+                "complete",
+                "--snapshot",
+                str(snap_dir / "snapshot.json"),
+                "--outcome",
+                "passed",
+                "--output",
+                str(self._make_codex_output()),
+                env=base_env,
+                ok=ok,
+            )
+
+        # 1. Dirty AGENTS.override.md refuses at capture and at complete.
+        (self.repo / "AGENTS.override.md").write_text("# Dirty override\n")
+        res_dirty_override = self.capture_clean(wt, env=base_env, ok=False)
+        self.assertIn("dirty live reviewer or gate surface", res_dirty_override.stderr)
+        self.git("checkout", "--", "AGENTS.override.md")
+
+        snap_ovr = cap_exec(wt, "--executable", str(committed_bin))
+        self.run_helper_env("claim", "--snapshot", str(snap_ovr / "snapshot.json"), env=base_env)
+        (self.repo / "AGENTS.override.md").write_text("# Mutated during review\n")
+        comp_dirty_ovr = comp_exec(snap_ovr, ok=False)
+        self.assertIn("dirty live reviewer or gate surface", comp_dirty_ovr.stderr)
+        self.git("checkout", "--", "AGENTS.override.md")
+
+        # 2. Uncommitted caller-local executable via --executable fails capture.
+        untracked_bin = self.repo / "codex" / "untracked-codex"
+        untracked_bin.write_text("#!/bin/sh\nexit 0\n")
+        untracked_bin.chmod(0o755)
+        res_untracked_bin = cap_exec(wt, "--executable", str(untracked_bin), ok=False)
+        self.assertIn("dirty live reviewer or gate surface", res_untracked_bin.stderr)
+        untracked_bin.unlink()
+
+        # 3. Clean committed executable passes capture, then dirtying it fails complete.
+        snap_bin = cap_exec(wt, "--executable", str(committed_bin))
+        self.run_helper_env("claim", "--snapshot", str(snap_bin / "snapshot.json"), env=base_env)
+        committed_bin.write_text("#!/bin/sh\necho tampered\n")
+        comp_dirty_bin = comp_exec(snap_bin, ok=False)
+        self.assertIn("dirty live reviewer or gate surface", comp_dirty_bin.stderr)
+        self.git("checkout", "--", "codex/committed-codex")
+
+        # 4. CODEX_GATE_BIN escaping through a repo symlink is caught even if --executable was resolved.
+        ext_bin = Path(self.tmp.name) / "external-codex-bin"
+        ext_bin.write_text("#!/bin/sh\nexit 0\n")
+        ext_bin.chmod(0o755)
+        esc_bin = self.repo / "codex" / "escape-bin"
+        esc_bin.symlink_to(ext_bin)
+        env_esc_bin = dict(base_env, CODEX_GATE_BIN=str(esc_bin))
+        res_esc_bin = cap_exec(wt, "--executable", str(ext_bin), env=env_esc_bin, ok=False)
+        self.assertIn("receipt repository", res_esc_bin.stderr)
+        esc_bin.unlink()
+
+        # 5. Tracked repo/bin/codex replaced locally with a symlink to ext_bin fails with --launcher even without CODEX_GATE_BIN.
+        wt_launcher = self.new_detached_worktree("wt-launcher")
+        path_codex.unlink()
+        path_codex.symlink_to(ext_bin)
+        res_launcher_esc = cap_exec(
+            wt_launcher, "--executable", str(ext_bin), "--launcher", str(path_codex), ok=False
+        )
+        self.assertIn("receipt repository", res_launcher_esc.stderr)
+
+        # Clean committed launcher passes capture, then swapping to external symlink fails complete.
+        path_codex.unlink()
+        self.git("checkout", "--", "bin/codex")
+        snap_launcher = cap_exec(
+            wt_launcher, "--executable", str(committed_bin), "--launcher", str(path_codex)
+        )
+        self.assertIn("capture_launcher", json.loads((snap_launcher / "snapshot.json").read_text()))
+        self.run_helper_env(
+            "claim", "--snapshot", str(snap_launcher / "snapshot.json"), env=base_env
+        )
+        path_codex.unlink()
+        path_codex.symlink_to(ext_bin)
+        comp_launcher_esc = comp_exec(snap_launcher, ok=False)
+        self.assertIn("receipt repository", comp_launcher_esc.stderr)
+
+        # Complete cleanly with restored launcher, then verify forged capture_launcher on receipt fails check.
+        path_codex.unlink()
+        self.git("checkout", "--", "bin/codex")
+        snap_launcher_ok = cap_exec(
+            wt_launcher, "--executable", str(committed_bin), "--launcher", str(path_codex)
+        )
+        self.run_helper_env(
+            "claim", "--snapshot", str(snap_launcher_ok / "snapshot.json"), env=base_env
+        )
+        comp_exec(snap_launcher_ok)
+        self.git("worktree", "remove", "--force", str(wt_launcher))
+        receipt_path = self.receipts_dir() / "codex.json"
+        saved_receipt = json.loads(receipt_path.read_text())
+        self.assertNotIn("capture_launcher", saved_receipt)
+        forged_receipt = json.loads(json.dumps(saved_receipt))
+        forged_receipt["capture_launcher"] = str(path_codex)
+        receipt_path.write_text(json.dumps(forged_receipt))
+        self.assertIn("capture_launcher", self.check_refusal())
+        receipt_path.write_text(json.dumps(saved_receipt))
+        self.check()
+        self.git("worktree", "remove", "--force", str(wt))
+
+    def _make_codex_output(self):
+        out = Path(self.tmp.name) / "codex-pass.json"
+        out.write_text(
+            json.dumps(
+                {
+                    "verdict": "approve",
+                    "summary": "ok",
+                    "next_steps": [],
+                    "findings": [],
+                    "coverage": {"status": "complete", "examined": ["code.txt"], "limitations": []},
+                }
+            )
+        )
+        return out
+
+    def test_clean_worktree_rejects_escaping_symlinks_and_allows_internal_links(self):
+        self.git("checkout", "-q", "main")
+        (self.repo / "docs").mkdir(exist_ok=True)
+        (self.repo / "docs" / "ref").symlink_to("../code.txt")
+        self.git("add", "docs/ref")
+        self.git("commit", "-qm", "internal non-instruction symlink")
+        self.git("checkout", "-qb", "internal-link-feature")
+        (self.repo / "code.txt").write_text("feature via internal link\n")
+        self.git("commit", "-qam", "work")
+
+        head_ok = self.git("rev-parse", "HEAD")
+        wt_ok = Path(self.tmp.name) / "wt-internal-link"
+        self.git("worktree", "add", "--no-checkout", "--quiet", "--detach", str(wt_ok), head_ok)
+        self.run_helper(
+            "materialize",
+            "--repo",
+            str(wt_ok),
+            "--receipt-repo",
+            str(self.repo),
+            "--head",
+            head_ok,
+        )
+        snap = self.capture_clean(wt_ok, base="main")
+        self.claim(snap)
+        self.complete(snap)
+        self.git("worktree", "remove", "--force", str(wt_ok))
+        self.check()
+
+        bad_cases = (
+            ("rel-escape", "esc-rel", "../../.env.local"),
+            ("abs-escape", "esc-abs", "/etc/hosts"),
+            ("dotgit-target", "esc-dotgit", ".git"),
+        )
+        for label, link_name, target in bad_cases:
+            with self.subTest(case=label):
+                self.git("checkout", "-qb", f"bad-{label}", "main")
+                (self.repo / link_name).symlink_to(target)
+                self.git("add", link_name)
+                self.git("commit", "-qm", f"add {label}")
+                head_bad = self.git("rev-parse", "HEAD")
+                wt_noc = Path(self.tmp.name) / f"wt-noc-{label}"
+                self.git(
+                    "worktree", "add", "--no-checkout", "--quiet", "--detach", str(wt_noc), head_bad
+                )
+                mat_bad = self.run_helper_env(
+                    "materialize",
+                    "--repo",
+                    str(wt_noc),
+                    "--receipt-repo",
+                    str(self.repo),
+                    "--head",
+                    head_bad,
+                    ok=False,
+                )
+                self.assertIn("clean worktree", mat_bad.stderr)
+                self.git("worktree", "remove", "--force", str(wt_noc))
+                wt_man = self.new_detached_worktree(f"wt-man-{label}", ref=head_bad)
+                cap_bad = self.capture_clean(wt_man, base="main", ok=False)
+                self.assertIn("clean worktree", cap_bad.stderr)
+                self.git("worktree", "remove", "--force", str(wt_man))
+
+        # Chained escape and symlink loop also fail both materialize and capture.
+        self.git("checkout", "-qb", "bad-chain", "main")
+        (self.repo / "dotlink").symlink_to(".")
+        (self.repo / "chain-esc").symlink_to("dotlink/../outside")
+        self.git("add", "dotlink", "chain-esc")
+        self.git("commit", "-qm", "chained escape")
+        head_chain = self.git("rev-parse", "HEAD")
+        wt_chain = Path(self.tmp.name) / "wt-chain"
+        self.git(
+            "worktree", "add", "--no-checkout", "--quiet", "--detach", str(wt_chain), head_chain
+        )
+        mat_chain = self.run_helper_env(
+            "materialize",
+            "--repo",
+            str(wt_chain),
+            "--receipt-repo",
+            str(self.repo),
+            "--head",
+            head_chain,
+            ok=False,
+        )
+        self.assertIn("escaping symlink", mat_chain.stderr)
+        self.git("worktree", "remove", "--force", str(wt_chain))
+
+        self.git("checkout", "-qb", "bad-loop", "main")
+        (self.repo / "loop-a").symlink_to("loop-b")
+        (self.repo / "loop-b").symlink_to("loop-a")
+        self.git("add", "loop-a", "loop-b")
+        self.git("commit", "-qm", "symlink loop")
+        head_loop = self.git("rev-parse", "HEAD")
+        wt_loop = self.new_detached_worktree("wt-loop", ref=head_loop)
+        cap_loop = self.capture_clean(wt_loop, base="main", ok=False)
+        self.assertIn("symlink loop", cap_loop.stderr)
+        self.git("worktree", "remove", "--force", str(wt_loop))
+
+    def test_clean_worktree_supports_separate_git_dir_primary_checkout(self):
+        sep_meta = Path(self.tmp.name) / "separate-meta"
+        self.git("init", "--separate-git-dir", str(sep_meta))
+        self.dirty_caller_runtime_files()
+
+        head = self.git("rev-parse", "HEAD")
+        wt = Path(self.tmp.name) / "wt-sep"
+        self.git("worktree", "add", "--no-checkout", "--quiet", "--detach", str(wt), head)
+        self.run_helper(
+            "materialize",
+            "--repo",
+            str(wt),
+            "--receipt-repo",
+            str(self.repo),
+            "--head",
+            head,
+        )
+        snap = self.capture_clean(wt, base="main")
+        self.claim(snap)
+        self.complete(snap)
+        self.git("worktree", "remove", "--force", str(wt))
+        self.check()
+
+        # A linked worktree whose .git file is forged to point directly to sep_meta must fail.
+        wt_forged = self.new_detached_worktree("wt-forged", ref=head)
+        (wt_forged / ".git").unlink()
+        (wt_forged / ".git").write_text(f"gitdir: {sep_meta}\n")
+        forged_res = self.capture_clean(wt_forged, base="main", ok=False)
+        self.assertIn("not owned by the receipt repository", forged_res.stderr)
+        shutil.rmtree(wt_forged)
+        self.git("worktree", "prune")
+
+    def test_clean_worktree_materialize_suppresses_post_index_change_hooks(self):
+        self.git("checkout", "-q", "main")
+        (self.repo / "code.txt").write_text("hook suppression check\n")
+        self.git("commit", "-qam", "work")
+        head = self.git("rev-parse", "HEAD")
+
+        hook_marker = Path(self.tmp.name) / "post-index-change-ran"
+        default_hook = self.repo / ".git" / "hooks" / "post-index-change"
+        default_hook.parent.mkdir(parents=True, exist_ok=True)
+        default_hook.write_text(f"#!/bin/sh\ntouch '{hook_marker}'\n")
+        default_hook.chmod(0o755)
+
+        wt1 = Path(self.tmp.name) / "wt-hook-default"
+        self.git("worktree", "add", "--no-checkout", "--quiet", "--detach", str(wt1), head)
+        self.run_helper(
+            "materialize",
+            "--repo",
+            str(wt1),
+            "--receipt-repo",
+            str(self.repo),
+            "--head",
+            head,
+        )
+        self.assertFalse(hook_marker.exists())
+        self.git("worktree", "remove", "--force", str(wt1))
+
+        custom_hooks = Path(self.tmp.name) / "custom-hooks"
+        custom_hooks.mkdir()
+        custom_hook = custom_hooks / "post-index-change"
+        custom_hook.write_text(f"#!/bin/sh\ntouch '{hook_marker}'\n")
+        custom_hook.chmod(0o755)
+        self.git("config", "core.hooksPath", str(custom_hooks))
+
+        wt2 = Path(self.tmp.name) / "wt-hook-custom"
+        self.git("worktree", "add", "--no-checkout", "--quiet", "--detach", str(wt2), head)
+        self.run_helper(
+            "materialize",
+            "--repo",
+            str(wt2),
+            "--receipt-repo",
+            str(self.repo),
+            "--head",
+            head,
+        )
+        self.assertFalse(hook_marker.exists())
+        self.git("worktree", "remove", "--force", str(wt2))
+
+    def _make_case_insensitive_fs(self):
+        base = os.path.realpath(self.tmp.name)
+
+        def _fold(name):
+            return unicodedata.normalize("NFC", name).casefold()
+
+        class _Entry:
+            def __init__(self, real_entry, parent_str):
+                self._real = real_entry
+                self.name = real_entry.name
+                self.path = os.path.join(parent_str, real_entry.name)
+
+            def stat(self, *, follow_symlinks=True):
+                return self._real.stat(follow_symlinks=follow_symlinks)
+
+        class _ScanCtx:
+            def __init__(self, entries):
+                self._entries = entries
+
+            def __enter__(self):
+                return iter(self._entries)
+
+            def __exit__(self, *exc):
+                return False
+
+        class _CaseInsensitiveFS:
+            def __init__(self, sandbox_base):
+                self._base = sandbox_base
+
+            def getcwd(self):
+                return os.getcwd()
+
+            def _is_base(self, path_obj):
+                return os.path.realpath(path_obj) == self._base
+
+            def _resolve(self, path, follow_final=False):
+                raw = os.fspath(path)
+                if not os.path.isabs(raw):
+                    raw = os.path.join(self.getcwd(), raw)
+                queue = [seg for seg in raw.split("/") if seg and seg != "."]
+                cur = Path("/")
+                logical = []
+                in_base = self._is_base(cur)
+                hops = 0
+                idx = 0
+                while idx < len(queue):
+                    seg = queue[idx]
+                    idx += 1
+                    is_last = idx == len(queue)
+                    if seg == "..":
+                        if logical:
+                            logical.pop()
+                        if cur.parent != cur:
+                            cur = cur.parent
+                        in_base = self._is_base(cur) or Path(self._base) in cur.parents
+                        continue
+                    chosen = seg
+                    if in_base:
+                        try:
+                            with os.scandir(cur) as it:
+                                entries = list(it)
+                        except OSError:
+                            entries = []
+                        exact = next((e.name for e in entries if e.name == seg), None)
+                        if exact is not None:
+                            chosen = exact
+                        else:
+                            folded = _fold(seg)
+                            chosen = next((e.name for e in entries if _fold(e.name) == folded), seg)
+                    candidate_real = cur / chosen
+                    if (not is_last or follow_final) and os.path.islink(candidate_real):
+                        hops += 1
+                        if hops > 40:
+                            raise OSError("too many symlinks")
+                        target = os.readlink(candidate_real)
+                        if os.path.isabs(target):
+                            cur = Path("/")
+                            logical = []
+                            in_base = False
+                        else:
+                            in_base = self._is_base(cur) or Path(self._base) in cur.parents
+                        extra = [s for s in target.split("/") if s and s != "."]
+                        queue = extra + queue[idx:]
+                        idx = 0
+                        continue
+                    cur = candidate_real
+                    logical.append(seg)
+                    if not in_base and self._is_base(cur):
+                        in_base = True
+                return cur, "/" + "/".join(logical)
+
+            def lstat(self, path):
+                return os.lstat(self._resolve(path, follow_final=False)[0])
+
+            def stat(self, path):
+                return os.stat(self._resolve(path, follow_final=True)[0])
+
+            def readlink(self, path):
+                return os.readlink(self._resolve(path, follow_final=False)[0])
+
+            def scandir(self, path):
+                parent_str = os.fspath(path)
+                real_dir = self._resolve(path, follow_final=True)[0]
+                with os.scandir(real_dir) as it:
+                    wrapped = [_Entry(entry, parent_str) for entry in it]
+                return _ScanCtx(wrapped)
+
+            def realpath(self, path):
+                return self._resolve(path, follow_final=True)[1]
+
+            def samefile(self, a, b):
+                return os.path.samefile(
+                    self._resolve(a, follow_final=True)[0],
+                    self._resolve(b, follow_final=True)[0],
+                )
+
+        return _CaseInsensitiveFS(base)
+
+    def test_clean_worktree_rejects_case_aliased_symlink_escape(self):
+        spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        # 1. Case-aliased chain `link -> .` + `escape -> LINK/../outside` fails both materialize and capture.
+        self.git("checkout", "-qb", "bad-ci-escape", "main")
+        (self.repo / "link").symlink_to(".")
+        (self.repo / "escape").symlink_to("LINK/../outside")
+        self.git("add", "link", "escape")
+        self.git("commit", "-qm", "case-aliased escape chain")
+        head_alias = self.git("rev-parse", "HEAD")
+
+        wt_noc = Path(self.tmp.name) / "wt-ci-escape"
+        self.git("worktree", "add", "--no-checkout", "--quiet", "--detach", str(wt_noc), head_alias)
+        mat_alias = self.run_helper_env(
+            "materialize",
+            "--repo",
+            str(wt_noc),
+            "--receipt-repo",
+            str(self.repo),
+            "--head",
+            head_alias,
+            ok=False,
+        )
+        self.assertIn("escaping symlink", mat_alias.stderr)
+        self.git("worktree", "remove", "--force", str(wt_noc))
+
+        wt_man = self.new_detached_worktree("wt-man-ci-escape", ref=head_alias)
+        cap_alias = self.capture_clean(wt_man, base="main", ok=False)
+        self.assertIn("escaping symlink", cap_alias.stderr)
+
+        # Pure filesystem-identity verification catches LINK/../outside on a case-insensitive FS.
+        ci_fs = self._make_case_insensitive_fs()
+        with self.assertRaisesRegex(ValueError, "escaping symlink"):
+            module._assert_disk_symlinks_confined(wt_man, ["link", "escape"], fs=ci_fs)
+        self.git("worktree", "remove", "--force", str(wt_man))
+
+        # 2. Regular file nested under a case-aliased symlink ancestor (`link -> .`, `LINK/file.txt`) is rejected.
+        self.git("checkout", "-qb", "bad-alias-anc", "main")
+        (self.repo / "link").symlink_to(".")
+        self.git("add", "link")
+        self.git("commit", "-qm", "add link")
+        if not (self.repo / "LINK").exists():
+            # Create tree with `link -> .` and blob `LINK/file.txt` without needing FS collision.
+            file_oid = self.git("hash-object", "-w", str(self.repo / "code.txt"))
+            base_tree = self.git("rev-parse", "HEAD^{tree}")
+            link_tree = (
+                subprocess.check_output(
+                    ["git", "-C", str(self.repo), "mktree"],
+                    input=f"100644 blob {file_oid}\tfile.txt\n".encode(),
+                )
+                .decode()
+                .strip()
+            )
+            root_lines = subprocess.check_output(
+                ["git", "-C", str(self.repo), "ls-tree", base_tree]
+            ).decode()
+            combined_tree = (
+                subprocess.check_output(
+                    ["git", "-C", str(self.repo), "mktree"],
+                    input=(root_lines + f"040000 tree {link_tree}\tLINK\n").encode(),
+                )
+                .decode()
+                .strip()
+            )
+            bad_commit = (
+                subprocess.check_output(
+                    ["git", "-C", str(self.repo), "commit-tree", combined_tree, "-p", "HEAD"],
+                    input=b"case-aliased ancestor under symlink\n",
+                )
+                .decode()
+                .strip()
+            )
+            self.git("update-ref", "refs/heads/bad-alias-anc", bad_commit)
+            wt_anc = Path(self.tmp.name) / "wt-ci-anc"
+            self.git(
+                "worktree", "add", "--no-checkout", "--quiet", "--detach", str(wt_anc), bad_commit
+            )
+            mat_anc = self.run_helper_env(
+                "materialize",
+                "--repo",
+                str(wt_anc),
+                "--receipt-repo",
+                str(self.repo),
+                "--head",
+                bad_commit,
+                ok=False,
+            )
+            self.assertIn("escaping symlink ancestor", mat_anc.stderr)
+            self.git("worktree", "remove", "--force", str(wt_anc))
+
+    def test_clean_worktree_live_runtime_validates_case_aliased_repo_paths(self):
+        spec = importlib.util.spec_from_file_location("receipt_under_test", HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        self.git("checkout", "-q", "main")
+        (self.repo / "rules").mkdir(exist_ok=True)
+        agents_lower = self.repo / "rules" / "agents.md"
+        agents_lower.write_text("# Clean lower rules\n")
+        self.git("add", "rules/agents.md")
+        self.git("commit", "-qm", "committed lower rules/agents.md")
+
+        ci_fs = self._make_case_insensitive_fs()
+        repo_upper = Path(self.tmp.name) / self.repo.name.upper()
+        alias_dir = Path(self.tmp.name) / "ci-live-home" / ".codex"
+        alias_dir.mkdir(parents=True)
+        alias_link = alias_dir / "AGENTS.md"
+        alias_link.symlink_to(repo_upper / "RULES" / "AGENTS.md")
+
+        rels = module._paths_within_repo(alias_link, self.repo, fs=ci_fs)
+        self.assertEqual(rels, [Path("rules/agents.md")])
+
+        clean_home = Path(self.tmp.name) / "ci-live-home"
+        with mock.patch.dict(
+            os.environ,
+            {"HOME": str(clean_home), "CODEX_HOME": str(alias_dir)},
+            clear=False,
+        ):
+            # Clean tracked lowercase file passes through case-aliased spelling.
+            module.assert_live_runtime_clean(self.repo, fs=ci_fs)
+
+            # Mutated lowercase file accessed via uppercase alias fails closed.
+            agents_lower.write_text("# Dirty via uppercase alias\n")
+            with self.assertRaisesRegex(ValueError, "dirty live reviewer or gate surface"):
+                module.assert_live_runtime_clean(self.repo, fs=ci_fs)
+
+            # Deleted tracked file accessed via uppercase alias also fails closed.
+            agents_lower.unlink()
+            with self.assertRaisesRegex(ValueError, "dirty live reviewer or gate surface"):
+                module.assert_live_runtime_clean(self.repo, fs=ci_fs)
+
+    def test_clean_worktree_rejects_ignorecase_untracked_case_collision(self):
+        self.git("checkout", "-q", "main")
+        (self.repo / "agents.md").write_text("# Clean tracked lower\n")
+        self.git("add", "agents.md")
+        self.git("commit", "-qm", "tracked agents.md")
+        self.git("checkout", "-qb", "ignorecase-collision")
+        (self.repo / "code.txt").write_text("feature work\n")
+        self.git("commit", "-qam", "work")
+        self.git("config", "core.ignoreCase", "true")
+
+        # Skip only when the host OS filesystem itself forbids case-distinct siblings.
+        wt = self.new_detached_worktree("wt-ignorecase")
+        (wt / "AGENTS.md").write_text("# Untracked uppercase in wt\n")
+        if sorted(p.name for p in wt.iterdir() if p.name.lower() == "agents.md") != [
+            "AGENTS.md",
+            "agents.md",
+        ]:
+            self.git("worktree", "remove", "--force", str(wt))
+            self.skipTest("case-insensitive filesystem")
+
+        # 1. assert_worktree_clean rejects untracked AGENTS.md despite core.ignoreCase=true.
+        cap_wt = self.capture_clean(wt, base="main", ok=False)
+        self.assertIn("untracked or ignored files", cap_wt.stderr)
+        (wt / "AGENTS.md").unlink()
+
+        # 2. assert_live_runtime_clean rejects untracked AGENTS.md in caller repo via symlink.
+        (self.repo / "AGENTS.md").write_text("# Untracked uppercase live surface\n")
+        fake_home = Path(self.tmp.name) / "ignorecase-home"
+        (fake_home / ".codex").mkdir(parents=True)
+        (fake_home / ".codex" / "AGENTS.md").symlink_to(self.repo / "AGENTS.md")
+        cap_live = self.capture_clean(
+            wt, base="main", env=dict(os.environ, HOME=str(fake_home)), ok=False
+        )
+        self.assertIn("dirty live reviewer or gate surface", cap_live.stderr)
+        self.assertIn("AGENTS.md", cap_live.stderr)
+        (self.repo / "AGENTS.md").unlink()
+        self.git("worktree", "remove", "--force", str(wt))
+
+    def test_clean_worktree_live_runtime_never_exempts_active_targets_in_node_modules(self):
+        self.git("checkout", "-q", "main")
+        (self.repo / "package-lock.json").write_text('{"name":"demo","lockfileVersion":3}\n')
+        (self.repo / ".gitignore").write_text("node_modules/\n")
+        self.git("add", "package-lock.json", ".gitignore")
+        self.git("commit", "-qm", "lockfile and ignore node_modules")
+        self.git("checkout", "-qb", "nm-active-feature")
+        (self.repo / "code.txt").write_text("feature work\n")
+        self.git("commit", "-qam", "work")
+
+        nm_bin = self.repo / "node_modules" / ".bin"
+        nm_bin.mkdir(parents=True)
+        nm_codex = nm_bin / "codex"
+        nm_codex.write_text("#!/bin/sh\nexit 0\n")
+        nm_codex.chmod(0o755)
+        nm_agents = self.repo / "node_modules" / "pkg" / "AGENTS.md"
+        nm_agents.parent.mkdir(parents=True)
+        nm_agents.write_text("# Ignored instruction\n")
+        nm_skills = self.repo / "node_modules" / "evil-skills"
+        (nm_skills / "demo").mkdir(parents=True)
+        (nm_skills / "demo" / "SKILL.md").write_text("# Evil skill\n")
+
+        clean_home = Path(self.tmp.name) / "nm-clean-home"
+        clean_home.mkdir()
+        wt = self.new_detached_worktree("wt-nm-active")
+        clean_env = dict(os.environ, HOME=str(clean_home))
+        clean_env.pop("CODEX_GATE_BIN", None)
+        clean_env.pop("CODEX_HOME", None)
+
+        # Incidental ignored node_modules does not block when unselected.
+        snap_ok = self.capture_clean(wt, base="main", env=clean_env)
+        self.assertTrue(snap_ok.exists())
+
+        # 1. Actively selected CODEX_GATE_BIN under node_modules/.bin/codex fails closed.
+        res_env_bin = self.capture_clean(
+            wt, base="main", env=dict(clean_env, CODEX_GATE_BIN=str(nm_codex)), ok=False
+        )
+        self.assertIn("dirty live reviewer or gate surface", res_env_bin.stderr)
+
+        # 2. Bare `codex` resolved from PATH into node_modules/.bin/codex fails closed.
+        res_path_bin = self.capture_clean(
+            wt,
+            base="main",
+            env=dict(clean_env, PATH=f"{nm_bin}:{clean_env.get('PATH', '')}"),
+            ok=False,
+        )
+        self.assertIn("dirty live reviewer or gate surface", res_path_bin.stderr)
+
+        # 3. Installed instruction link targeting node_modules/pkg/AGENTS.md fails closed.
+        home_file_link = Path(self.tmp.name) / "nm-file-home"
+        (home_file_link / ".codex").mkdir(parents=True)
+        (home_file_link / ".codex" / "AGENTS.md").symlink_to(nm_agents)
+        res_instr_file = self.capture_clean(
+            wt, base="main", env=dict(clean_env, HOME=str(home_file_link)), ok=False
+        )
+        self.assertIn("dirty live reviewer or gate surface", res_instr_file.stderr)
+
+        # 4. Installed skill directory symlink targeting node_modules/evil-skills fails closed.
+        home_dir_link = Path(self.tmp.name) / "nm-dir-home"
+        (home_dir_link / ".codex").mkdir(parents=True)
+        (home_dir_link / ".codex" / "skills").symlink_to(nm_skills)
+        res_instr_dir = self.capture_clean(
+            wt, base="main", env=dict(clean_env, HOME=str(home_dir_link)), ok=False
+        )
+        self.assertIn("dirty live reviewer or gate surface", res_instr_dir.stderr)
+        self.git("worktree", "remove", "--force", str(wt))
+
+    def test_clean_worktree_follows_sibling_gate_dependencies_outside_standard_roots(self):
+        self.git("checkout", "-q", "main")
+        (self.repo / "claude" / "scripts").mkdir(parents=True)
+        gate_lib = self.repo / "claude" / "scripts" / "gate-lib.sh"
+        schema = self.repo / "claude" / "scripts" / "codex-review-schema.json"
+        gate_lib.write_text("#!/usr/bin/env bash\nGATE_LIB=clean\n")
+        schema.write_text('{"type":"object"}\n')
+        (self.repo / "package-lock.json").write_text('{"name":"demo","lockfileVersion":3}\n')
+        (self.repo / ".gitignore").write_text("node_modules/\n")
+        self.git(
+            "add",
+            "claude/scripts/gate-lib.sh",
+            "claude/scripts/codex-review-schema.json",
+            "package-lock.json",
+            ".gitignore",
+        )
+        self.git("commit", "-qm", "committed gate sibling files")
+        self.git("checkout", "-qb", "opt-gates-feature")
+        (self.repo / "code.txt").write_text("feature work\n")
+        self.git("commit", "-qam", "work")
+
+        opt_gates = Path(self.tmp.name) / "opt-gates"
+        opt_gates.mkdir()
+        opt_helper = opt_gates / "review-receipt.py"
+        shutil.copy2(HELPER, opt_helper)
+        (opt_gates / "gate-lib.sh").symlink_to(gate_lib)
+        (opt_gates / "codex-review-schema.json").symlink_to(schema)
+
+        clean_home = Path(self.tmp.name) / "opt-gates-home"
+        clean_home.mkdir()
+        env_opt = dict(os.environ, HOME=str(clean_home))
+        env_opt.pop("CODEX_HOME", None)
+        env_opt.pop("CLAUDE_CONFIG_DIR", None)
+        env_opt.pop("CODEX_GATE_BIN", None)
+
+        def run_opt(*cmd_args, ok=True):
+            proc = subprocess.run(
+                [sys.executable, str(opt_helper), *cmd_args],
+                capture_output=True,
+                text=True,
+                env=env_opt,
+            )
+            self.assertEqual(proc.returncode == 0, ok, proc.stdout + proc.stderr)
+            return proc
+
+        wt = self.new_detached_worktree("wt-opt-gates")
+
+        def cap_opt(ok=True):
+            return run_opt(
+                "capture",
+                "--repo",
+                str(wt),
+                "--receipt-repo",
+                str(self.repo),
+                "--reviewer",
+                "codex",
+                "--scope",
+                "committed",
+                "--base",
+                "main",
+                ok=ok,
+            )
+
+        run_dir = Path(cap_opt().stdout.strip())
+        run_opt("claim", "--snapshot", str(run_dir / "snapshot.json"))
+
+        # Mutate committed sibling gate-lib.sh during review: complete must fail closed.
+        gate_lib.write_text("#!/usr/bin/env bash\nGATE_LIB=tampered\n")
+        comp_dirty = run_opt(
+            "complete",
+            "--snapshot",
+            str(run_dir / "snapshot.json"),
+            "--outcome",
+            "passed",
+            "--output",
+            str(self._make_codex_output()),
+            ok=False,
+        )
+        self.assertIn("dirty live reviewer or gate surface", comp_dirty.stderr)
+
+        # Capture also refuses dirty linked gate-lib.sh and dirty linked schema.
+        cap_dirty_lib = cap_opt(ok=False)
+        self.assertIn("dirty live reviewer or gate surface", cap_dirty_lib.stderr)
+        self.git("checkout", "--", "claude/scripts/gate-lib.sh")
+
+        schema.write_text('{"type":"object","tampered":true}\n')
+        cap_dirty_schema = cap_opt(ok=False)
+        self.assertIn("dirty live reviewer or gate surface", cap_dirty_schema.stderr)
+        self.git("checkout", "--", "claude/scripts/codex-review-schema.json")
+
+        # Sibling symlink pointing into ignored node_modules is never exempted.
+        evil_multipart = self.repo / "node_modules" / "evil" / "review-multipart.py"
+        evil_multipart.parent.mkdir(parents=True)
+        evil_multipart.write_text("print('tampered')\n")
+        (opt_gates / "review-multipart.py").symlink_to(evil_multipart)
+        cap_nm_sibling = cap_opt(ok=False)
+        self.assertIn("dirty live reviewer or gate surface", cap_nm_sibling.stderr)
+        self.git("worktree", "remove", "--force", str(wt))
 
 
 if __name__ == "__main__":

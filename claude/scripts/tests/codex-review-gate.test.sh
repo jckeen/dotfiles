@@ -3146,6 +3146,174 @@ check "a blocking review names where its output is kept" 2 "Full review output k
 assert "that review's verdict is on record" "verdict_on_record"
 rm -rf "$R"
 
+# ── --clean-worktree for committed reviews (#clean-worktree) ──────────────
+# Repos with untracked operator-local .claude/settings.json or .env* cannot pass
+# ordinary committed capture, and the reviewer must not see those local files.
+new_repo
+git -C "$R" checkout -qb feature
+echo "committed work" >> "$R/code.txt"
+git -C "$R" commit -qam "ahead"
+check "--clean-worktree cannot combine with --uncommitted" 2 "cannot be combined" --clean-worktree --uncommitted --no-issues
+check "--clean-worktree requires --committed" 2 "requires --committed" --clean-worktree --no-issues
+
+mkdir -p "$R/.claude"
+printf '{"permissions":{}}\n' > "$R/.claude/settings.json"
+printf 'SECRET_ENV_MARKER=topsecret\n' > "$R/.env.local"
+approve_clean
+check "untracked .claude/settings.json blocks committed review without --clean-worktree" 2 "dirty instruction surface" --committed --require --no-issues
+
+CLEAN_TEST_TMP="$(mktemp -d)"
+cat > "$CODEX_FAKE_DIR/mutate" <<'EOF'
+pwd -P > "$CODEX_FAKE_DIR/cwd"
+[ ! -e ".claude/settings.json" ] || touch "$CODEX_FAKE_DIR/saw-settings"
+[ ! -e ".env.local" ] || touch "$CODEX_FAKE_DIR/saw-env"
+EOF
+out_clean="$(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
+rc_clean=$?
+CHECK_OUTPUT="$out_clean"
+assert "--clean-worktree committed review passes with untracked .claude/settings.json and .env.local" "[ '$rc_clean' -eq 0 ] && grep -qF 'Codex review passed' <<<\"\$CHECK_OUTPUT\""
+assert "--clean-worktree runs Codex in a clean detached temp worktree" "grep -qF '$CLEAN_TEST_TMP/' '$CODEX_FAKE_DIR/cwd' && [ ! -e '$CODEX_FAKE_DIR/saw-settings' ] && [ ! -e '$CODEX_FAKE_DIR/saw-env' ]"
+assert "--clean-worktree receipt validates in caller repo after temp worktree removal" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+assert "--clean-worktree removes temp dir and git worktree metadata on pass" "[ -z \"\$(ls -A '$CLEAN_TEST_TMP')\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
+rm -f "$CODEX_FAKE_DIR/mutate" "$CODEX_FAKE_DIR/cwd" "$CODEX_FAKE_DIR/saw-settings" "$CODEX_FAKE_DIR/saw-env"
+
+# Low-finding issue filing still uses caller's real branch name (not detached HEAD).
+git -C "$R" remote add origin https://github.com/acme/widgets.git
+low_finding "clean-wt branch nit" "code.txt"
+(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+rc_low=$?
+assert "--clean-worktree issue filing records caller branch name" "[ '$rc_low' -eq 0 ] && grep -qF '**Branch:** \`feature\`' '$CODEX_FAKE_DIR/created-bodies'"
+assert "--clean-worktree cleans up after low-finding pass" "[ -z \"\$(ls -A '$CLEAN_TEST_TMP')\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
+
+# Blocking verdict under --clean-worktree records block + retained output in caller repo
+# and retires an earlier approval.
+blocking_verdict
+(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1)
+rc_block=$?
+assert "--clean-worktree blocking verdict exits 2" "[ '$rc_block' -eq 2 ]"
+assert "--clean-worktree blocking verdict records block marker and retains review in caller repo" "[ \"\$(block_markers)\" -ge 1 ] && [ -n \"\$(retained)\" ] && ! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+assert "--clean-worktree cleans up temp dir and metadata on block" "[ -z \"\$(ls -A '$CLEAN_TEST_TMP')\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
+
+# SIGTERM cancellation under --clean-worktree invalidates lane and cleans detached worktree.
+rm -rf "$R/.git/review-receipts/blocks"
+approve_clean
+(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1) || true
+assert "re-seeded clean-worktree receipt validates before cancellation test" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+cat > "$CODEX_FAKE_DIR/mutate" <<'EOF'
+kill -TERM "$(cat "$CODEX_FAKE_DIR/gate-pid")"
+sleep 0.2
+EOF
+(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" bash -c 'echo $$ > "$CODEX_FAKE_DIR/gate-pid"; exec "$@"' _ "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1)
+rc_cancel=$?
+rm -f "$CODEX_FAKE_DIR/mutate" "$CODEX_FAKE_DIR/gate-pid"
+assert "--clean-worktree cancellation exits 3, invalidates receipt, and removes detached worktree" "[ '$rc_cancel' -eq 3 ] && [ ! -e '$R/.git/review-receipts/codex.json' ] && [ -z \"\$(ls -A '$CLEAN_TEST_TMP')\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
+
+# Inherited GATE_CLEAN_WT_ROOT / GATE_RECEIPT_REPO / GATE_WORK_REPO cannot delete caller dirs or retarget.
+SENTINEL_WT="$(mktemp -d)"
+printf 'keep\n' > "$SENTINEL_WT/keep.txt"
+FOREIGN_REPO="$(mktemp -d)"
+git -C "$FOREIGN_REPO" init -q -b main
+(cd "$R" && env HOME="$TEST_HOME" GATE_CLEAN_WT_ROOT="$SENTINEL_WT" GATE_RECEIPT_REPO="$FOREIGN_REPO" GATE_WORK_REPO="$FOREIGN_REPO" "$GATE" --uncommitted --no-issues >/dev/null 2>&1)
+rc_env=$?
+assert "inherited GATE_CLEAN_WT_* vars are ignored and never deleted" "[ '$rc_env' -eq 0 ] && [ -f '$SENTINEL_WT/keep.txt' ] && [ ! -e '$FOREIGN_REPO/.git/review-receipts' ]"
+rm -rf "$SENTINEL_WT" "$FOREIGN_REPO" "$CLEAN_TEST_TMP" "$R"
+
+# Smudge filters never run during --clean-worktree setup, and worktree-relative --base '@{upstream}' works.
+new_repo
+CLEAN_TEST_TMP="$(mktemp -d)"
+SMUDGE_ORIGIN="$(mktemp -d)"
+SMUDGE_MARKER="$SMUDGE_ORIGIN/smudge-ran"
+git -C "$SMUDGE_ORIGIN" init -q --bare --initial-branch=main
+git -C "$R" remote add origin "$SMUDGE_ORIGIN"
+git -C "$R" push -q -u origin main
+git -C "$R" checkout -qb feature
+printf '*.txt filter=demo\n' > "$R/.gitattributes"
+printf 'clean line\n' > "$R/code.txt"
+git -C "$R" add .gitattributes code.txt
+git -C "$R" commit -qm "tracked attributes and text change"
+git -C "$R" branch --set-upstream-to=origin/main feature
+git -C "$R" config filter.demo.smudge "sh -c 'touch \"$SMUDGE_MARKER\"; cat'"
+git -C "$R" config filter.demo.clean "cat"
+mkdir -p "$R/.claude"
+printf '{"permissions":{}}\n' > "$R/.claude/settings.json"
+approve_clean
+(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --base '@{upstream}' --require --no-issues >/dev/null 2>&1)
+rc_relbase=$?
+assert "--clean-worktree never executes smudge filters and resolves @{upstream} from caller" "[ '$rc_relbase' -eq 0 ] && [ ! -e '$SMUDGE_MARKER' ] && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --base '@{upstream}' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
+
+# Inherited GIT_INDEX_FILE cannot be overwritten during --clean-worktree setup/materialization.
+printf 'staged only content\n' > "$R/staged.txt"
+git -C "$R" add staged.txt
+before_idx="$(wc -c < "$R/.git/index")"
+before_stage="$(git -C "$R" ls-files --stage staged.txt)"
+out_idx="$(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" GIT_INDEX_FILE="$R/.git/index" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
+rc_idx=$?
+has_idx_msg=0
+if grep -qF 'GIT_INDEX_FILE' <<<"$out_idx"; then
+  has_idx_msg=1
+fi
+after_idx="$(wc -c < "$R/.git/index")"
+after_stage="$(git -C "$R" ls-files --stage staged.txt)"
+assert "--clean-worktree refuses inherited GIT_INDEX_FILE without touching caller index" "[ '$rc_idx' -eq 2 ] && [ '$has_idx_msg' -eq 1 ] && [ '$before_idx' = '$after_idx' ] && [ '$before_stage' = '$after_stage' ] && [ -z \"\$(ls -A '$CLEAN_TEST_TMP')\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
+
+# Uncommitted CODEX_GATE_BIN inside caller repo fails closed under --clean-worktree.
+mkdir -p "$R/codex"
+cat > "$R/codex/fake-codex" <<'EOF'
+#!/bin/sh
+touch "$CODEX_FAKE_DIR/untracked-bin-ran"
+exit 0
+EOF
+chmod +x "$R/codex/fake-codex"
+rm -f "$CODEX_FAKE_DIR/untracked-bin-ran"
+out_bin="$(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" CODEX_GATE_BIN="$R/codex/fake-codex" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
+rc_bin=$?
+has_bin_msg=0
+if grep -qF 'dirty live reviewer or gate surface' <<<"$out_bin"; then
+  has_bin_msg=1
+fi
+assert "--clean-worktree refuses uncommitted CODEX_GATE_BIN in caller repo" "[ '$rc_bin' -eq 2 ] && [ '$has_bin_msg' -eq 1 ] && [ ! -e '$CODEX_FAKE_DIR/untracked-bin-ran' ] && [ ! -e '$R/.git/review-receipts/codex.json' ] && [ -z \"\$(ls -A '$CLEAN_TEST_TMP')\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
+
+# Tracked PATH-selected repo/bin/codex locally replaced with an escaping symlink fails closed
+# even when CODEX_GATE_BIN is unset and canonical realpath target sits outside the repo.
+mkdir -p "$R/bin"
+printf '#!/bin/sh\nexit 0\n' > "$R/bin/codex"
+chmod +x "$R/bin/codex"
+git -C "$R" add bin/codex
+git -C "$R" commit -qm "tracked PATH codex launcher"
+rm -f "$R/bin/codex" "$CODEX_FAKE_DIR/invoked"
+ln -s "$SHIM_DIR/codex" "$R/bin/codex"
+approve_clean
+out_path_esc="$(cd "$R" && env -u CODEX_GATE_BIN HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" PATH="$R/bin:$PATH" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
+rc_path_esc=$?
+has_path_esc_msg=0
+if grep -qF 'receipt repository' <<<"$out_path_esc"; then
+  has_path_esc_msg=1
+fi
+assert "--clean-worktree rejects PATH-selected repo/bin/codex symlink escaping repo" "[ '$rc_path_esc' -eq 2 ] && [ '$has_path_esc_msg' -eq 1 ] && [ ! -e '$CODEX_FAKE_DIR/invoked' ] && [ ! -e '$R/.git/review-receipts/codex.json' ] && [ -z \"\$(ls -A '$CLEAN_TEST_TMP')\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
+rm -rf "$SMUDGE_ORIGIN" "$CLEAN_TEST_TMP" "$R"
+
+# Primary checkout created with `git init --separate-git-dir` supports --clean-worktree end-to-end.
+SEP_META="$(mktemp -d)"
+rmdir "$SEP_META"
+SEP_R="$(mktemp -d)"
+CLEAN_SEP_TMP="$(mktemp -d)"
+git init -q -b main --separate-git-dir "$SEP_META" "$SEP_R"
+git -C "$SEP_R" config user.email test@example.com
+git -C "$SEP_R" config user.name Test
+echo "base" > "$SEP_R/code.txt"
+git -C "$SEP_R" add code.txt
+git -C "$SEP_R" commit -qm "base"
+git -C "$SEP_R" checkout -qb feature
+echo "feature change" >> "$SEP_R/code.txt"
+git -C "$SEP_R" commit -qam "ahead"
+mkdir -p "$SEP_R/.claude"
+printf '{"permissions":{}}\n' > "$SEP_R/.claude/settings.json"
+approve_clean
+(cd "$SEP_R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_SEP_TMP" "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1)
+rc_sep=$?
+assert "--clean-worktree supports --separate-git-dir primary checkout" "[ '$rc_sep' -eq 0 ] && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$SEP_R' --head \"\$(git -C '$SEP_R' rev-parse HEAD)\" >/dev/null 2>&1 && [ -z \"\$(ls -A '$CLEAN_SEP_TMP')\" ] && [ \"\$(git -C '$SEP_R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
+rm -rf "$SEP_META" "$SEP_R" "$CLEAN_SEP_TMP"
+
 R="$(mktemp -d)"
 check "outside Git keeps advisory warning" 0 "not inside a git work tree"
 check "outside Git blocks required review" 3 "treating as a hard failure" --require

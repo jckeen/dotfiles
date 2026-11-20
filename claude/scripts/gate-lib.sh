@@ -13,6 +13,28 @@ yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 green()  { printf '\033[32m%s\033[0m\n' "$*"; }
 bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
 
+# Clear clean-worktree ownership globals unconditionally on source so
+# entrypoints that source gate-lib.sh and invoke gate_cleanup (such as
+# review-and-push.sh's tier-1 path) never act on inherited environment values.
+GATE_CLEAN_WT=""
+GATE_CLEAN_WT_EXTRA=""
+GATE_CLEAN_WT_ROOT=""
+GATE_CLEAN_WT_PID=""
+# shellcheck disable=SC2034  # Initialized on source; shared across gates.
+GATE_RECEIPT_REPO=""
+# shellcheck disable=SC2034  # Initialized on source; shared across gates.
+GATE_WORK_REPO=""
+GATE_CLI_LAUNCHER=""
+GATE_GIT_ENV_UNSET=()
+for _gate_git_var in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE \
+  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES \
+  GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE \
+  GIT_NAMESPACE GIT_PREFIX GIT_ATTR_SOURCE GIT_CONFIG GIT_CONFIG_PARAMETERS \
+  GIT_CONFIG_COUNT; do
+  GATE_GIT_ENV_UNSET+=(-u "$_gate_git_var")
+done
+unset _gate_git_var
+
 # ─── Artifact capture and receipts ─────────────────────────────
 # All content extraction belongs to the helper: even a normal worktree diff
 # can execute a configured clean filter before --no-textconv takes effect.
@@ -24,8 +46,9 @@ bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
 # approval valid (#499). Warn just BEFORE the claim retires anything. Presence
 # only: whether that receipt was valid is `review-receipt.py check`'s business.
 gate_warn_competing_receipt() {
-  local receipts other
-  receipts="$(git rev-parse --git-path review-receipts 2>/dev/null)" || return 0
+  local repo="${GATE_RECEIPT_REPO:-.}" receipts other
+  receipts="$(git -C "$repo" rev-parse --git-path review-receipts 2>/dev/null)" || return 0
+  [[ "$receipts" == /* ]] || receipts="$repo/$receipts"
   for other in codex antigravity; do
     [[ "$other" != "$GATE_REVIEWER" ]] || continue
     [[ -f "$receipts/$other.json" ]] || continue
@@ -39,18 +62,38 @@ gate_init_receipt() {
   RECEIPT_HELPER="$SCRIPT_DIR/review-receipt.py"
   command -v python3 >/dev/null 2>&1 || { red "Python 3 is required for artifact receipts."; exit 2; }
   [[ -f "$RECEIPT_HELPER" ]] || { red "Review receipt helper missing: $RECEIPT_HELPER"; exit 2; }
-  python3 "$RECEIPT_HELPER" invalidate --repo . --reviewer "$GATE_REVIEWER" || exit 2
+  python3 "$RECEIPT_HELPER" invalidate --repo "${GATE_RECEIPT_REPO:-.}" --reviewer "$GATE_REVIEWER" || exit 2
+}
+
+gate_reject_git_routing_overrides() {
+  local git_overrides="" git_var
+  for git_var in "${!GIT_@}"; do
+    case "$git_var" in
+      GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_OBJECT_DIRECTORY|GIT_DIR|GIT_WORK_TREE|\
+      GIT_IMPLICIT_WORK_TREE|GIT_COMMON_DIR|GIT_GRAFT_FILE|GIT_INDEX_FILE|\
+      GIT_REPLACE_REF_BASE|GIT_PREFIX|GIT_SHALLOW_FILE|GIT_NAMESPACE|GIT_ATTR_SOURCE|\
+      GIT_CEILING_DIRECTORIES|GIT_CONFIG|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|\
+      GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
+        git_overrides+="${git_overrides:+, }$git_var" ;;
+    esac
+  done
+  if [[ -n "$git_overrides" ]]; then
+    red "✖ Inherited Git routing or configuration overrides conflict with --clean-worktree; unset: $git_overrides"
+    exit 2
+  fi
 }
 
 gate_resolve_base() {
+  [[ "${CLEAN_WORKTREE:-false}" != true ]] || gate_reject_git_routing_overrides
+  local repo="${GATE_RECEIPT_REPO:-.}"
   if [[ -z "$BASE" ]]; then
-    BASE="$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
+    BASE="$(git -C "$repo" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)"
     [[ -z "$BASE" ]] && BASE="main"
   fi
   BASE_REF=""
-  if git rev-parse --verify --quiet --end-of-options "origin/$BASE^{commit}" >/dev/null; then
+  if git -C "$repo" rev-parse --verify --quiet --end-of-options "origin/$BASE^{commit}" >/dev/null; then
     BASE_REF="origin/$BASE"
-  elif git rev-parse --verify --quiet --end-of-options "$BASE^{commit}" >/dev/null; then
+  elif git -C "$repo" rev-parse --verify --quiet --end-of-options "$BASE^{commit}" >/dev/null; then
     BASE_REF="$BASE"
   fi
   if [[ -z "$BASE_REF" && "$FORCE_UNCOMMITTED" != "true" ]]; then
@@ -66,18 +109,150 @@ gate_select_diff_target() {
   return 0
 }
 
+_gate_remove_worktree() {
+  local repo="$1" wt="$2" removed=0 common entry registered
+  [[ -n "$wt" ]] || return 0
+  if [[ -n "$repo" ]]; then
+    if env "${GATE_GIT_ENV_UNSET[@]}" git -C "$repo" -c core.hooksPath=/dev/null worktree remove --force -- "$wt" >/dev/null 2>&1; then
+      removed=1
+    fi
+  fi
+  rm -rf -- "$wt" >/dev/null 2>&1 || true
+  if [[ "$removed" -ne 1 && -n "$repo" ]]; then
+    common="$(env "${GATE_GIT_ENV_UNSET[@]}" git -C "$repo" -c core.hooksPath=/dev/null rev-parse --path-format=absolute --git-common-dir 2>/dev/null && printf .)" || common=""
+    common=${common%$'\n.'}
+    if [[ -n "$common" && -d "$common/worktrees" ]]; then
+      for entry in "$common/worktrees"/*; do
+        [[ ! -L "$entry" && -d "$entry" && -f "$entry/gitdir" && ! -L "$entry/gitdir" ]] || continue
+        registered="$(python3 -c 'import sys; print(open(sys.argv[1], "rb").read().rstrip(b"\r\n").decode("utf-8", "surrogateescape"), end="")' "$entry/gitdir" 2>/dev/null && printf .)" || continue
+        registered=${registered%.}
+        if [[ "$registered" == "$wt/.git" ]]; then
+          rm -rf -- "$entry" >/dev/null 2>&1 || true
+        fi
+      done
+    fi
+  fi
+}
+
+_gate_materialize_detached_worktree() {
+  local repo="$1" dest="$2" head="$3"
+  env "${GATE_GIT_ENV_UNSET[@]}" GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects -C "$repo" \
+    -c core.sparseCheckout=false -c submodule.recurse=false \
+    -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+    worktree add --no-checkout --quiet --detach -- "$dest" "$head" || return 1
+  python3 "$RECEIPT_HELPER" materialize \
+    --repo "$dest" --receipt-repo "$repo" --head "$head" || return 1
+}
+
+gate_clean_worktree_add_extra() {
+  local dest="$1" head="$2"
+  [[ "${GATE_CLEAN_WT_PID:-}" == "$$" && -n "${GATE_RECEIPT_REPO:-}" && -n "${RECEIPT_HELPER:-}" ]] || return 1
+  gate_reject_git_routing_overrides
+  # Record before creation so EXIT/signal handlers still clean up if aborted mid-setup.
+  GATE_CLEAN_WT_EXTRA="$dest"
+  _gate_materialize_detached_worktree "$GATE_RECEIPT_REPO" "$dest" "$head"
+}
+
+gate_clean_worktree_remove_extra() {
+  [[ "${GATE_CLEAN_WT_PID:-}" == "$$" && -n "${GATE_CLEAN_WT_EXTRA:-}" ]] || return 0
+  local wt_extra="$GATE_CLEAN_WT_EXTRA" repo="${GATE_RECEIPT_REPO:-}"
+  GATE_CLEAN_WT_EXTRA=""
+  _gate_remove_worktree "$repo" "$wt_extra"
+}
+
+gate_clean_worktree_cleanup() {
+  [[ "${GATE_CLEAN_WT_PID:-}" == "$$" ]] || return 0
+  local wt_root="${GATE_CLEAN_WT_ROOT:-}" wt="${GATE_CLEAN_WT:-}" wt_extra="${GATE_CLEAN_WT_EXTRA:-}" repo="${GATE_RECEIPT_REPO:-}"
+  GATE_CLEAN_WT_EXTRA=""
+  GATE_CLEAN_WT_ROOT=""
+  GATE_CLEAN_WT=""
+  GATE_CLEAN_WT_PID=""
+  [[ -n "$wt_root" || -n "$wt" || -n "$wt_extra" ]] || return 0
+  _gate_remove_worktree "$repo" "$wt_extra"
+  _gate_remove_worktree "$repo" "$wt"
+  [[ -z "$wt_root" ]] || rm -rf -- "$wt_root" >/dev/null 2>&1 || true
+}
+
+gate_clean_worktree_setup() {
+  if [[ "${FORCE_COMMITTED:-false}" != true || "${FORCE_UNCOMMITTED:-false}" == true ]]; then
+    red "✖ --clean-worktree requires --committed and cannot be combined with --uncommitted."
+    exit 2
+  fi
+  if [[ -z "${RECEIPT_HELPER:-}" || ! -f "$RECEIPT_HELPER" ]]; then
+    red "✖ Review receipt helper is missing for --clean-worktree setup."
+    exit 2
+  fi
+  gate_reject_git_routing_overrides
+  local repo_raw pinned_head tmp_base wt_root_canon wt_base
+  repo_raw="$(env "${GATE_GIT_ENV_UNSET[@]}" git rev-parse --show-toplevel && printf .)" || {
+    red "✖ Cannot resolve repository root for --clean-worktree."
+    exit 2
+  }
+  repo_raw=${repo_raw%$'\n.'}
+  GATE_RECEIPT_REPO="$(cd -P -- "$repo_raw" && pwd -P && printf .)" || {
+    red "✖ Cannot canonicalize repository root for --clean-worktree."
+    exit 2
+  }
+  GATE_RECEIPT_REPO=${GATE_RECEIPT_REPO%$'\n.'}
+  pinned_head="$(env "${GATE_GIT_ENV_UNSET[@]}" GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects -C "$GATE_RECEIPT_REPO" rev-parse --verify --end-of-options 'HEAD^{commit}')" || {
+    red "✖ Cannot resolve HEAD commit for --clean-worktree."
+    exit 2
+  }
+  tmp_base="${TMPDIR:-/tmp}"
+  while [[ "$tmp_base" != "/" && "$tmp_base" == */ ]]; do
+    tmp_base="${tmp_base%/}"
+  done
+  GATE_CLEAN_WT_ROOT="$(mktemp -d "$tmp_base/gate-clean-wt.XXXXXX")" || {
+    red "✖ Cannot create temporary directory for --clean-worktree."
+    exit 2
+  }
+  GATE_CLEAN_WT_PID="$$"
+  if ! chmod 700 "$GATE_CLEAN_WT_ROOT"; then
+    rm -rf -- "$GATE_CLEAN_WT_ROOT" || true
+    GATE_CLEAN_WT_ROOT=""
+    GATE_CLEAN_WT_PID=""
+    red "✖ Cannot set permissions on temporary clean worktree directory."
+    exit 2
+  fi
+  if ! wt_root_canon="$(cd -P -- "$GATE_CLEAN_WT_ROOT" && pwd -P && printf .)"; then
+    rm -rf -- "$GATE_CLEAN_WT_ROOT" || true
+    GATE_CLEAN_WT_ROOT=""
+    GATE_CLEAN_WT_PID=""
+    red "✖ Cannot canonicalize temporary clean worktree directory."
+    exit 2
+  fi
+  GATE_CLEAN_WT_ROOT=${wt_root_canon%$'\n.'}
+  wt_base="$(basename -- "$GATE_CLEAN_WT_ROOT")"
+  GATE_CLEAN_WT="$GATE_CLEAN_WT_ROOT/$wt_base"
+  # Arm cleanup before `git worktree add` so an interruption during creation or
+  # materialization removes both the temporary checkout and worktree metadata.
+  # shellcheck disable=SC2064
+  trap "${GATE_EXIT_HANDLER:-gate_cleanup}" EXIT
+  if ! _gate_materialize_detached_worktree "$GATE_RECEIPT_REPO" "$GATE_CLEAN_WT" "$pinned_head"; then
+    red "✖ Failed to materialize clean detached worktree for --clean-worktree."
+    exit 2
+  fi
+  # shellcheck disable=SC2034  # Read by gate_extract_diff and sourcing gates.
+  GATE_WORK_REPO="$GATE_CLEAN_WT"
+}
+
 gate_cleanup() {
+  gate_clean_worktree_cleanup
   [[ -z "${GATE_RUN_DIR:-}" ]] || rm -rf -- "$GATE_RUN_DIR"
 }
 
 gate_extract_diff() {
-  local args=(capture --repo . --scope "$GATE_SCOPE" --reviewer "$GATE_REVIEWER")
+  local work_repo="${GATE_WORK_REPO:-.}"
+  local args=(capture --repo "$work_repo" --scope "$GATE_SCOPE" --reviewer "$GATE_REVIEWER")
   GATE_CLAIMED=0
+  [[ -z "${GATE_RECEIPT_REPO:-}" ]] || args+=(--receipt-repo "$GATE_RECEIPT_REPO")
   [[ -z "$BASE_REF" ]] || args+=(--base "$BASE_REF")
-  local executable
+  local executable launcher
   executable="$(command -v "$GATE_CLI" && printf .)" || executable=""
   executable=${executable%$'\n.'}
   args+=(--executable "$executable")
+  launcher="${GATE_CLI_LAUNCHER:-}"
+  [[ -z "$launcher" || "$launcher" == "$executable" ]] || args+=(--launcher "$launcher")
   args+=("--tier1-max-lines=${GATE_TIER1_MAX_LINES:-200}")
   # The tier-1 BYTE ceiling is deliberately NOT overridable from here: its only
   # source is review-receipt.py's TIER1_MAX_BYTES, which every caller inherits by
@@ -100,7 +275,7 @@ gate_extract_diff() {
   DIFF_CONTENT="$(cat "$GATE_RUN_DIR/diff.patch")" || exit 2
   GATE_SCOPE="$(jq -r '.artifact.scope' "$GATE_RUN_DIR/snapshot.json")"
   # shellcheck disable=SC2034  # Read by the sourcing gates.
-  TARGET_DESC="$GATE_SCOPE changes (pinned HEAD, base ${BASE_REF:-unused})"
+  TARGET_DESC="$GATE_SCOPE changes (pinned HEAD, base ${BASE_REF:-unused}${GATE_CLEAN_WT:+, clean worktree})"
 }
 
 gate_changed_paths() {
@@ -549,8 +724,8 @@ gate_issue_index_marker() {
 # GraphQL-backed — the very call a restricted sandbox may refuse. Accept a
 # bare two-part slug only: a nested or empty parse is a failure, never a guess.
 gate_repo_slug() {
-  local url slug=""
-  url="$(git config --get remote.origin.url 2>/dev/null)" || url=""
+  local url slug="" repo="${GATE_RECEIPT_REPO:-.}"
+  url="$(git -C "$repo" config --get remote.origin.url 2>/dev/null)" || url=""
   case "$url" in
     *github.com[:/]*)
       slug="${url##*github.com}"
