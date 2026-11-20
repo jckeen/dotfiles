@@ -408,6 +408,7 @@ check "#701 explicit AGY_MEMORY_REPO still wins over DOTFILES_DEV_DIR (bootstrap
 # The health checkers derive the same sibling paths (setup.sh --check runs
 # them), so they must follow the override too. Planted files make the control
 # run name the planted sibling; the override run must not.
+mkdir -p "$FAKE_DEV/claude-memory/dev/memory"
 printf 'planted\n' > "$FAKE_DEV/codex-memory/AGENTS.local.md"
 printf 'planted\n' > "$FAKE_DEV/agy-memory/GEMINI.local.md"
 # The checkers stop early on an uninitialised tool, so give the throwaway home

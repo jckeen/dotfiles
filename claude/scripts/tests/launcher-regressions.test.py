@@ -933,6 +933,84 @@ cct "$@"
                 f"{audit_flags}: {setup_after.stdout + setup_after.stderr}",
             )
 
+        # Project-only claude-memory (no dev/memory): missing/unlinked project
+        # destinations must be flagged by both check-claude and setup --check,
+        # while the absent dev/memory link that setup skips must not be required.
+        shutil.rmtree(self.root / ".claude" / "projects")
+        companions_proj_only = self.root / "companions-proj-only"
+        (companions_proj_only / "claude-memory" / "dotfiles" / "memory").mkdir(parents=True)
+        (companions_proj_only / "claude-memory" / "dotfiles" / "memory" / "MEMORY.md").write_text(
+            "# proj only\n"
+        )
+        proj_only_env = dict(test_env, DOTFILES_DEV_DIR=str(companions_proj_only))
+        for cmd in (
+            ["bash", str(setup_repo / "check-claude.sh")],
+            ["bash", str(setup_repo / "setup.sh"), "--check"],
+        ):
+            missing_proj = subprocess.run(
+                cmd,
+                cwd=setup_repo,
+                env=proj_only_env,
+                text=True,
+                capture_output=True,
+                timeout=60,
+            )
+            self.assertNotEqual(missing_proj.returncode, 0, missing_proj.stdout)
+            self.assertIn("MISSING  memory (dotfiles)", missing_proj.stdout)
+            self.assertNotIn("MISSING  memory symlink", missing_proj.stdout)
+
+        proj_mem_dir = self.root / ".claude" / "projects" / f"-{dotfiles_munged}" / "memory"
+        proj_mem_dir.mkdir(parents=True)
+        (proj_mem_dir / "local.md").write_text("local only\n")
+        for cmd in (
+            ["bash", str(setup_repo / "check-claude.sh")],
+            ["bash", str(setup_repo / "setup.sh"), "--check"],
+        ):
+            unlinked_proj = subprocess.run(
+                cmd,
+                cwd=setup_repo,
+                env=proj_only_env,
+                text=True,
+                capture_output=True,
+                timeout=60,
+            )
+            self.assertNotEqual(unlinked_proj.returncode, 0, unlinked_proj.stdout)
+            self.assertIn("NOT LINKED  memory (dotfiles)", unlinked_proj.stdout)
+
+        proj_only_setup = subprocess.run(
+            ["bash", str(setup_repo / "setup.sh"), "--yes"],
+            cwd=setup_repo,
+            env=proj_only_env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertEqual(
+            proj_only_setup.returncode, 0, proj_only_setup.stdout + proj_only_setup.stderr
+        )
+        self.assertFalse((self.root / ".claude" / "projects" / f"-{munged}" / "memory").exists())
+        self.assertEqual(
+            proj_mem_dir.resolve(),
+            (companions_proj_only / "claude-memory" / "dotfiles" / "memory").resolve(),
+        )
+        self.assertTrue(
+            (companions_proj_only / "claude-memory" / "dotfiles" / "memory" / "local.md").exists()
+        )
+        for cmd in (
+            ["bash", str(setup_repo / "check-claude.sh")],
+            ["bash", str(setup_repo / "setup.sh"), "--check"],
+            ["bash", str(setup_repo / "setup.sh"), "--repair"],
+        ):
+            proj_only_ok = subprocess.run(
+                cmd,
+                cwd=setup_repo,
+                env=proj_only_env,
+                text=True,
+                capture_output=True,
+                timeout=60,
+            )
+            self.assertEqual(proj_only_ok.returncode, 0, proj_only_ok.stdout + proj_only_ok.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

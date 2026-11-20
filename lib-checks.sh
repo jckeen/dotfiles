@@ -281,43 +281,54 @@ dotfiles_dev_dir() {
   fi
 }
 
+_check_one_claude_memory_link() {
+  local label="$1" src="$2" dst="$3" memory_repo="$4" target
+  if [ -L "$dst" ]; then
+    target="$(readlink "$dst" 2>/dev/null || true)"
+    if [ -d "$memory_repo" ] && [ -e "$src" ] && [ "$target" != "$src" ]; then
+      red "WRONG  $label -> $target (expected $src — run setup.sh)"
+      ERRORS=$((${ERRORS:-0} + 1))
+    elif [ ! -e "$dst" ]; then
+      red "BROKEN  $label -> $target (target missing)"
+      ERRORS=$((${ERRORS:-0} + 1))
+    elif [ -d "$memory_repo" ] && [ -d "$dst" ] && [ "$target" != "$src" ]; then
+      red "WRONG  $label -> $target (expected $src — run setup.sh)"
+      ERRORS=$((${ERRORS:-0} + 1))
+    fi
+  elif [ -d "$memory_repo" ] && [ -d "$dst" ]; then
+    yellow "NOT LINKED  $label (exists as directory, not symlink — run setup.sh)"
+    WARNINGS=$((${WARNINGS:-0} + 1))
+  elif [ -d "$memory_repo" ] && [ -e "$src" ]; then
+    if [ -e "$dst" ]; then
+      yellow "NOT LINKED  $label (exists as non-directory, not symlink — run setup.sh)"
+    else
+      yellow "MISSING  $label symlink (repo memory exists but not linked — run setup.sh)"
+    fi
+    WARNINGS=$((${WARNINGS:-0} + 1))
+  fi
+}
+
 # check_claude_memory_links <checkout-dev-dir> <companion-dev-dir> <claude-dst>
-# Audit managed Claude project-memory symlinks against the selected companion
-# repository (#701). Shared between check-claude.sh and setup.sh run_health_audit
-# so --check / --repair enforce the exact resolved-target invariant even when
-# claude-memory/bootstrap.sh is absent. Must stay safe under set -euo pipefail
-# + ERR trap (callers check return status). Returns 0 iff clean, 1 if any
-# ERRORS or WARNINGS were added.
+# Audit managed Claude project-memory symlinks against setup.sh's exact
+# [ -e "$src" ] || [ -d "$dst" ] contract (#701). Shared between check-claude.sh
+# and setup.sh run_health_audit so --check / --repair enforce the exact
+# resolved-target invariant even when claude-memory/bootstrap.sh is absent.
+# Must stay safe under set -euo pipefail + ERR trap (callers check return
+# status). Returns 0 iff clean, 1 if any ERRORS or WARNINGS were added.
 check_claude_memory_links() {
   local checkout_dev_dir="$1" companion_dev_dir="$2" claude_dst="$3"
   local checkout_prefix="${checkout_dev_dir%/}"
   local memory_repo="${companion_dev_dir%/}/claude-memory"
-  local dev_munged memory_dst memory_src target
-  local _proj _proj_name _proj_munged _proj_dst _proj_src
+  local dev_munged _proj _proj_name _proj_munged
   local start_errors="${ERRORS:-0}" start_warnings="${WARNINGS:-0}"
 
   dev_munged="$(echo "$checkout_dev_dir" | sed 's|^/||; s|/|-|g')"
-  memory_dst="$claude_dst/projects/-${dev_munged}/memory"
-  memory_src="$memory_repo/dev/memory"
+  _check_one_claude_memory_link "memory" \
+    "$memory_repo/dev/memory" \
+    "$claude_dst/projects/-${dev_munged}/memory" \
+    "$memory_repo"
 
-  if [ -L "$memory_dst" ]; then
-    target="$(readlink "$memory_dst" 2>/dev/null || true)"
-    if [ -d "$memory_repo" ] && [ "$target" != "$memory_src" ]; then
-      red "WRONG  memory -> $target (expected $memory_src — run setup.sh)"
-      ERRORS=$((${ERRORS:-0} + 1))
-    elif [ ! -e "$memory_dst" ]; then
-      red "BROKEN  memory -> $target (target missing)"
-      ERRORS=$((${ERRORS:-0} + 1))
-    fi
-  elif [ -d "$memory_dst" ]; then
-    yellow "NOT LINKED  memory (exists as directory, not symlink — run setup.sh)"
-    WARNINGS=$((${WARNINGS:-0} + 1))
-  elif [ -d "$memory_repo" ]; then
-    yellow "MISSING  memory symlink (repo exists but not linked — run setup.sh)"
-    WARNINGS=$((${WARNINGS:-0} + 1))
-  fi
-
-  if [ -d "$claude_dst/projects" ]; then
+  if [ -d "$memory_repo" ] || [ -d "$claude_dst/projects" ]; then
     for _proj in "$checkout_prefix"/*/; do
       if [ ! -d "$_proj" ]; then
         continue
@@ -327,18 +338,10 @@ check_claude_memory_links() {
         continue
       fi
       _proj_munged="$(echo "${_proj%/}" | sed 's|^/||; s|/|-|g')"
-      _proj_dst="$claude_dst/projects/-${_proj_munged}/memory"
-      _proj_src="$memory_repo/$_proj_name/memory"
-      if [ -L "$_proj_dst" ]; then
-        target="$(readlink "$_proj_dst" 2>/dev/null || true)"
-        if [ -d "$memory_repo" ] && [ "$target" != "$_proj_src" ]; then
-          red "WRONG  memory ($_proj_name) -> $target (expected $_proj_src — run setup.sh)"
-          ERRORS=$((${ERRORS:-0} + 1))
-        elif [ ! -e "$_proj_dst" ]; then
-          red "BROKEN  memory ($_proj_name) -> $target (target missing)"
-          ERRORS=$((${ERRORS:-0} + 1))
-        fi
-      fi
+      _check_one_claude_memory_link "memory ($_proj_name)" \
+        "$memory_repo/$_proj_name/memory" \
+        "$claude_dst/projects/-${_proj_munged}/memory" \
+        "$memory_repo"
     done
   fi
 
