@@ -68,6 +68,10 @@ imported here (see the README's "The private memory repos" section).
 - A test asserts behavior: call the code and check its result. Never assert on
   source text, or only that a mock was called. Use the lowest test level that
   proves the change, and a fake over a mock.
+- Prefer the real engine or parser over a hand-rolled regex or grammar scanner
+  in tests: let the target runtime evaluate or parse the artifact (for
+  example, PostgreSQL `PREPARE` and `pg_locks` instead of regex-scanning SQL)
+  so grammar edge cases cannot slip past the test.
 - Audit during the build, not at a final gate. The moment a risky surface (auth,
   path/host handling, file IO, schemas, hash chains) has a complete first draft,
   run the security/review pass then — in parallel with continuing. Auditing at
