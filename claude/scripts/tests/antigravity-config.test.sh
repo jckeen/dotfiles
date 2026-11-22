@@ -463,36 +463,39 @@ fi
 rm -rf "$QUOTE_BIN_BASE"
 
 # 10. Unreadable/unsearchable AGY_BIN_DIR and inaccessible ancestors fail with UNREADABLE (never silently pass).
-UNREAD_PARENT="$(canon_tmpdir)"
-UNREAD_BIN="$UNREAD_PARENT/nested/bin"
-mkdir -p "$UNREAD_BIN"
-printf 'hidden old binary\n' > "$UNREAD_BIN/agy.hidden.old"
-trap 'chmod -R u+rwX "$UNREAD_PARENT" 2>/dev/null || true; chmod 700 "$PROC_DIR"/[0-9]* 2>/dev/null || true; rm -rf "$R" "$H" "$EXTERNAL" "$EMPTY_DEV" "$BIN_DIR" "$PROC_DIR" "$BIN_OUTSIDE" "$BIN_LOCAL_HOME" "$UNREAD_PARENT"; rm -f "$OUT" "$CLEAN_MOUNTINFO"' EXIT
+# Root ignores directory permission bits, so the unreadable cases are skipped there.
+if [ "$(id -u)" -ne 0 ]; then
+  UNREAD_PARENT="$(canon_tmpdir)"
+  UNREAD_BIN="$UNREAD_PARENT/nested/bin"
+  mkdir -p "$UNREAD_BIN"
+  printf 'hidden old binary\n' > "$UNREAD_BIN/agy.hidden.old"
+  trap 'chmod -R u+rwX "$UNREAD_PARENT" 2>/dev/null || true; chmod 700 "$PROC_DIR"/[0-9]* 2>/dev/null || true; rm -rf "$R" "$H" "$EXTERNAL" "$EMPTY_DEV" "$BIN_DIR" "$PROC_DIR" "$BIN_OUTSIDE" "$BIN_LOCAL_HOME" "$UNREAD_PARENT"; rm -f "$OUT" "$CLEAN_MOUNTINFO"' EXIT
 
-for mode in 111 444 000; do
-  chmod "$mode" "$UNREAD_BIN"
+  for mode in 111 444 000; do
+    chmod "$mode" "$UNREAD_BIN"
+    if HOME="$H" AGY_MOUNTINFO_FILE="$CLEAN_MOUNTINFO" AGY_BIN_DIR="$UNREAD_BIN" AGY_PROC_DIR="$PROC_DIR" \
+      "$R/check-antigravity.sh" > "$OUT" 2>&1; then
+      fail "checker silently passed on chmod $mode AGY_BIN_DIR"
+    elif grep -q 'UNREADABLE' "$OUT" && ! grep -q 'All good' "$OUT"; then
+      ok "checker flags chmod $mode AGY_BIN_DIR as UNREADABLE"
+    else
+      fail "chmod $mode AGY_BIN_DIR lacked UNREADABLE error: $(cat "$OUT")"
+    fi
+    chmod 700 "$UNREAD_BIN"
+  done
+
+  chmod 000 "$UNREAD_PARENT/nested"
   if HOME="$H" AGY_MOUNTINFO_FILE="$CLEAN_MOUNTINFO" AGY_BIN_DIR="$UNREAD_BIN" AGY_PROC_DIR="$PROC_DIR" \
     "$R/check-antigravity.sh" > "$OUT" 2>&1; then
-    fail "checker silently passed on chmod $mode AGY_BIN_DIR"
-  elif grep -q 'UNREADABLE' "$OUT" && ! grep -q 'All good' "$OUT"; then
-    ok "checker flags chmod $mode AGY_BIN_DIR as UNREADABLE"
+    fail "checker silently passed when AGY_BIN_DIR ancestor was inaccessible"
+  elif grep -q 'UNREADABLE.*not searchable' "$OUT" && ! grep -q 'All good' "$OUT"; then
+    ok "checker flags inaccessible AGY_BIN_DIR ancestor as UNREADABLE"
   else
-    fail "chmod $mode AGY_BIN_DIR lacked UNREADABLE error: $(cat "$OUT")"
+    fail "inaccessible AGY_BIN_DIR ancestor lacked UNREADABLE error: $(cat "$OUT")"
   fi
-  chmod 700 "$UNREAD_BIN"
-done
-
-chmod 000 "$UNREAD_PARENT/nested"
-if HOME="$H" AGY_MOUNTINFO_FILE="$CLEAN_MOUNTINFO" AGY_BIN_DIR="$UNREAD_BIN" AGY_PROC_DIR="$PROC_DIR" \
-  "$R/check-antigravity.sh" > "$OUT" 2>&1; then
-  fail "checker silently passed when AGY_BIN_DIR ancestor was inaccessible"
-elif grep -q 'UNREADABLE.*not searchable' "$OUT" && ! grep -q 'All good' "$OUT"; then
-  ok "checker flags inaccessible AGY_BIN_DIR ancestor as UNREADABLE"
-else
-  fail "inaccessible AGY_BIN_DIR ancestor lacked UNREADABLE error: $(cat "$OUT")"
+  chmod 700 "$UNREAD_PARENT/nested"
+  rm -rf "$UNREAD_PARENT"
 fi
-chmod 700 "$UNREAD_PARENT/nested"
-rm -rf "$UNREAD_PARENT"
 
 echo ""
 echo "antigravity-config: $pass passed, $failed failed"
