@@ -1887,7 +1887,7 @@ printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
 check "untracked .claude/settings.json blocks committed agy review without --clean-worktree" 2 "dirty instruction surface" --committed --require
 
 CLEAN_TEST_TMP="$(mktemp -d)"
-out_agy_clean="$(cd "$R" && env TMPDIR="$CLEAN_TEST_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require 2>&1)"
+out_agy_clean="$(cd "$R" && env -u GIT_CEILING_DIRECTORIES TMPDIR="$CLEAN_TEST_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require 2>&1)"
 rc_agy_clean=$?
 has_agy_clean_text=0
 if grep -qF 'LGTB verdict' <<<"$out_agy_clean" && ! grep -qF 'Skipping local compile/lint' <<<"$out_agy_clean"; then
@@ -1898,7 +1898,7 @@ assert "--clean-worktree agy receipt validates in caller repo and leaves zero bl
 
 # Blocking verdict under --clean-worktree records block marker and cleans worktree.
 printf -- '- [P1] clean-worktree blocker — code.txt:1\n' > "$AGY_FAKE_DIR/output"
-(cd "$R" && env TMPDIR="$CLEAN_TEST_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES TMPDIR="$CLEAN_TEST_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_agy_block=$?
 assert "--clean-worktree blocking agy verdict exits 2, records block, retires receipt, and cleans up" "[ '$rc_agy_block' -eq 2 ] && [ -n \"\$(find '$R/.git/review-receipts/blocks' -name '*.json' 2>/dev/null)\" ] && ! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1 && [ -z \"\$(find '$CLEAN_TEST_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
 
@@ -1914,7 +1914,7 @@ for _ in 1 2 3 4; do
   esac
 done
 EOF
-(cd "$R" && env TMPDIR="$CLEAN_TEST_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES TMPDIR="$CLEAN_TEST_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_agy_cancel=$?
 rm -f "$AGY_FAKE_DIR/mutate"
 assert "--clean-worktree agy cancellation re-raises SIGTERM and removes detached worktree" "[ '$rc_agy_cancel' -eq 143 ] && [ -z \"\$(find '$CLEAN_TEST_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
@@ -1926,10 +1926,17 @@ FAKE_BIN_LINT="$(mktemp -d)"
 printf '#!/bin/sh\necho "lint failed in committed HEAD" >&2\nexit 1\n' > "$FAKE_BIN_LINT/npm"
 chmod +x "$FAKE_BIN_LINT/npm"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
-(cd "$R" && env PATH="$FAKE_BIN_LINT:$PATH" TMPDIR="$CLEAN_TEST_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES PATH="$FAKE_BIN_LINT:$PATH" TMPDIR="$CLEAN_TEST_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_agy_lint=$?
 rm -rf "$FAKE_BIN_LINT"
 assert "--clean-worktree runs committed Step 3 lint check in clean worktree and blocks on failure" "[ '$rc_agy_lint' -eq 2 ] && [ -n \"\$(find '$R/.git/review-receipts/blocks' -name '*.json' 2>/dev/null)\" ] && [ -z \"\$(find '$CLEAN_TEST_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
+out_agy_ceiling="$(cd "$R" && env TMPDIR="$CLEAN_TEST_TMP" GIT_CEILING_DIRECTORIES="/tmp" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require 2>&1)"
+rc_agy_ceiling=$?
+has_agy_ceiling_msg=0
+if grep -qF 'GIT_CEILING_DIRECTORIES' <<<"$out_agy_ceiling"; then
+  has_agy_ceiling_msg=1
+fi
+assert "--clean-worktree refuses explicit GIT_CEILING_DIRECTORIES" "[ '$rc_agy_ceiling' -eq 2 ] && [ '$has_agy_ceiling_msg' -eq 1 ] && [ -z \"\$(find '$CLEAN_TEST_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
 rm -rf "$CLEAN_TEST_TMP" "$R"
 
 # Committed package.json with unmaterialized dependencies degrades (exit 3) under --clean-worktree --require
@@ -1945,7 +1952,7 @@ git -C "$R" commit -qm "add ts project without node_modules"
 DEPS_HEAD="$(git -C "$R" rev-parse HEAD)"
 WT_SEED="$CLEAN_DEPS_TMP/seed-wt"
 git -C "$R" worktree add --quiet --detach -- "$WT_SEED" "$DEPS_HEAD"
-SEED_RUN="$(python3 "$SCRIPT_DIR/../review-receipt.py" begin --repo "$WT_SEED" --receipt-repo "$R" --reviewer codex --scope committed --base main)"
+SEED_RUN="$(env -u GIT_CEILING_DIRECTORIES python3 "$SCRIPT_DIR/../review-receipt.py" begin --repo "$WT_SEED" --receipt-repo "$R" --reviewer codex --scope committed --base main)"
 SEED_OUT="$CLEAN_DEPS_TMP/codex-seed.json"
 printf '%s\n' '{"verdict":"approve","summary":"ok","next_steps":[],"findings":[],"coverage":{"status":"complete","examined":["index.ts"],"limitations":[]}}' > "$SEED_OUT"
 python3 "$SCRIPT_DIR/../review-receipt.py" complete --snapshot "$SEED_RUN/snapshot.json" --outcome passed --output "$SEED_OUT"
@@ -1953,7 +1960,7 @@ git -C "$R" worktree remove --force -- "$WT_SEED"
 mkdir -p "$R/.claude"
 printf '{"permissions":{}}\n' > "$R/.claude/settings.json"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
-out_deps_degrade="$(cd "$R" && env TMPDIR="$CLEAN_DEPS_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require 2>&1)"
+out_deps_degrade="$(cd "$R" && env -u GIT_CEILING_DIRECTORIES TMPDIR="$CLEAN_DEPS_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require 2>&1)"
 rc_deps_degrade=$?
 has_deps_degrade_msg=0
 if grep -qF 'absent from the isolated --clean-worktree checkout' <<<"$out_deps_degrade"; then
@@ -1993,7 +2000,7 @@ EOF
 chmod +x "$FAKE_BIN_TS/npx" "$FAKE_BIN_TS/npm"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
-(cd "$R" && env PATH="$FAKE_BIN_TS:$PATH" TMPDIR="$CLEAN_TS_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES PATH="$FAKE_BIN_TS:$PATH" TMPDIR="$CLEAN_TS_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_ts_clean=$?
 assert "--clean-worktree Step 3 isolates tsc/lint outputs outside captured tree and completes receipt" "[ '$rc_ts_clean' -eq 0 ] && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1 && [ ! -e '$R/tsconfig.tsbuildinfo' ] && [ ! -e '$R/.eslintcache' ] && [ -z \"\$(find '$CLEAN_TS_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
 rm -rf "$FAKE_BIN_TS" "$CLEAN_TS_TMP" "$R"
@@ -2017,7 +2024,7 @@ EOF
 chmod +x "$FAKE_BIN_CARGO/cargo"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
-(cd "$R" && env PATH="$FAKE_BIN_CARGO:$PATH" TMPDIR="$CLEAN_CARGO_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES PATH="$FAKE_BIN_CARGO:$PATH" TMPDIR="$CLEAN_CARGO_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_cargo_clean=$?
 assert "--clean-worktree Step 3 isolates generated Cargo.lock and sets CARGO_TARGET_DIR" "[ '$rc_cargo_clean' -eq 0 ] && [ -s '$FAKE_BIN_CARGO/saw-target' ] && [ ! -e '$R/Cargo.lock' ] && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1 && [ -z \"\$(find '$CLEAN_CARGO_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
 rm -rf "$FAKE_BIN_CARGO" "$CLEAN_CARGO_TMP" "$R"
@@ -2051,7 +2058,7 @@ chmod +x "$FAKE_BIN_GIT/npm"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
 BAD_HEAD="$(git -C "$R" rev-parse HEAD)"
-(cd "$R" && env PATH="$FAKE_BIN_GIT:$PATH" TMPDIR="$CLEAN_GITCTX_TMP" AGY_FAKE_REPO="$R" EXPECTED_HEAD="$BAD_HEAD" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES PATH="$FAKE_BIN_GIT:$PATH" TMPDIR="$CLEAN_GITCTX_TMP" AGY_FAKE_REPO="$R" EXPECTED_HEAD="$BAD_HEAD" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_gitctx_fail=$?
 assert "--clean-worktree Step 3 git ls-files check blocks on committed defect with pinned HEAD" "[ '$rc_gitctx_fail' -eq 2 ] && [ -n \"\$(find '$R/.git/review-receipts/blocks' -name '*.json' 2>/dev/null)\" ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ] && [ -z \"\$(find '$CLEAN_GITCTX_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
 
@@ -2060,7 +2067,7 @@ printf 'CLEAN_TOKEN\n' > "$R/checked.txt"
 git -C "$R" add checked.txt
 git -C "$R" commit -qm "fix checked token"
 GOOD_HEAD="$(git -C "$R" rev-parse HEAD)"
-(cd "$R" && env PATH="$FAKE_BIN_GIT:$PATH" TMPDIR="$CLEAN_GITCTX_TMP" AGY_FAKE_REPO="$R" EXPECTED_HEAD="$GOOD_HEAD" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES PATH="$FAKE_BIN_GIT:$PATH" TMPDIR="$CLEAN_GITCTX_TMP" AGY_FAKE_REPO="$R" EXPECTED_HEAD="$GOOD_HEAD" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_gitctx_ok=$?
 assert "--clean-worktree Step 3 git ls-files check passes with pinned HEAD and isolates cache" "[ '$rc_gitctx_ok' -eq 0 ] && [ ! -e '$R/.eslintcache' ] && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head '$GOOD_HEAD' >/dev/null 2>&1 && [ -z \"\$(find '$CLEAN_GITCTX_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
 rm -rf "$FAKE_BIN_GIT" "$CLEAN_GITCTX_TMP" "$R"
@@ -2083,7 +2090,7 @@ exit 1
 EOF
 chmod +x "$FAKE_BIN_ESC/npm"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
-out_esc="$(cd "$R" && env PATH="$FAKE_BIN_ESC:$PATH" TMPDIR="$CLEAN_ESC_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require 2>&1)"
+out_esc="$(cd "$R" && env -u GIT_CEILING_DIRECTORIES PATH="$FAKE_BIN_ESC:$PATH" TMPDIR="$CLEAN_ESC_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require 2>&1)"
 rc_esc=$?
 has_esc_msg=0
 if grep -qF 'escaping symlink' <<<"$out_esc"; then
@@ -2106,7 +2113,7 @@ FAKE_BIN_LOCK="$(mktemp -d)"
 printf '#!/bin/sh\necho "lint failed with dep-free lockfile" >&2\nexit 1\n' > "$FAKE_BIN_LOCK/npm"
 chmod +x "$FAKE_BIN_LOCK/npm"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
-(cd "$R" && env PATH="$FAKE_BIN_LOCK:$PATH" TMPDIR="$CLEAN_LOCK_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES PATH="$FAKE_BIN_LOCK:$PATH" TMPDIR="$CLEAN_LOCK_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_lock_fail=$?
 assert "--clean-worktree runs Step 3 lint and blocks exit 2 when dependency-free package-lock.json is committed" "[ '$rc_lock_fail' -eq 2 ] && [ -n \"\$(find '$R/.git/review-receipts/blocks' -name '*.json' 2>/dev/null)\" ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ] && [ -z \"\$(find '$CLEAN_LOCK_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
 rm -rf "$FAKE_BIN_LOCK" "$CLEAN_LOCK_TMP" "$R"
@@ -2128,7 +2135,7 @@ git -C "$R" commit -qm "yarn pnp ts project without node_modules"
 PNP_TS_HEAD="$(git -C "$R" rev-parse HEAD)"
 WT_PNP_SEED="$CLEAN_PNP_TS_TMP/seed-wt"
 git -C "$R" worktree add --quiet --detach -- "$WT_PNP_SEED" "$PNP_TS_HEAD"
-SEED_PNP_RUN="$(python3 "$SCRIPT_DIR/../review-receipt.py" begin --repo "$WT_PNP_SEED" --receipt-repo "$R" --reviewer codex --scope committed --base main)"
+SEED_PNP_RUN="$(env -u GIT_CEILING_DIRECTORIES python3 "$SCRIPT_DIR/../review-receipt.py" begin --repo "$WT_PNP_SEED" --receipt-repo "$R" --reviewer codex --scope committed --base main)"
 SEED_PNP_OUT="$CLEAN_PNP_TS_TMP/codex-seed.json"
 printf '%s\n' '{"verdict":"approve","summary":"ok","next_steps":[],"findings":[],"coverage":{"status":"complete","examined":["index.ts"],"limitations":[]}}' > "$SEED_PNP_OUT"
 python3 "$SCRIPT_DIR/../review-receipt.py" complete --snapshot "$SEED_PNP_RUN/snapshot.json" --outcome passed --output "$SEED_PNP_OUT"
@@ -2143,7 +2150,7 @@ exit 1
 EOF
 chmod +x "$FAKE_BIN_PNP_TS/npx"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
-out_pnp_ts="$(cd "$R" && env PATH="$FAKE_BIN_PNP_TS:$PATH" TMPDIR="$CLEAN_PNP_TS_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require 2>&1)"
+out_pnp_ts="$(cd "$R" && env -u GIT_CEILING_DIRECTORIES PATH="$FAKE_BIN_PNP_TS:$PATH" TMPDIR="$CLEAN_PNP_TS_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require 2>&1)"
 rc_pnp_ts=$?
 has_pnp_ts_msg=0
 if grep -qF 'absent from the isolated --clean-worktree checkout' <<<"$out_pnp_ts"; then
@@ -2174,7 +2181,7 @@ EOF
 chmod +x "$FAKE_BIN_PNP_LINT/yarn"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
 printf '%s\n' "$PROP_OK" > "$AGY_FAKE_DIR/log"
-(cd "$R" && env PATH="$FAKE_BIN_PNP_LINT:$PATH" TMPDIR="$CLEAN_PNP_LINT_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES PATH="$FAKE_BIN_PNP_LINT:$PATH" TMPDIR="$CLEAN_PNP_LINT_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_pnp_lint_fail=$?
 assert "--clean-worktree runs yarn run lint for zero-install Yarn PnP lint-only repo and blocks exit 2 on failure" "[ '$rc_pnp_lint_fail' -eq 2 ] && [ \"\$(cat '$FAKE_BIN_PNP_LINT/yarn-args' 2>/dev/null)\" = 'run lint' ] && [ -n \"\$(find '$R/.git/review-receipts/blocks' -name '*.json' 2>/dev/null)\" ] && [ ! -e '$R/.git/review-receipts/antigravity.json' ] && [ -z \"\$(find '$CLEAN_PNP_LINT_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ]"
 
@@ -2185,7 +2192,7 @@ printf '%s\n' "\$*" > "$FAKE_BIN_PNP_LINT/yarn-args"
 exit 0
 EOF
 chmod +x "$FAKE_BIN_PNP_LINT/yarn"
-(cd "$R" && env PATH="$FAKE_BIN_PNP_LINT:$PATH" TMPDIR="$CLEAN_PNP_LINT_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES PATH="$FAKE_BIN_PNP_LINT:$PATH" TMPDIR="$CLEAN_PNP_LINT_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_pnp_lint_ok=$?
 assert "--clean-worktree passes zero-install Yarn PnP lint-only repo when yarn run lint succeeds" "[ '$rc_pnp_lint_ok' -eq 0 ] && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1 && [ -z \"\$(find '$CLEAN_PNP_LINT_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
 rm -rf "$FAKE_BIN_PNP_LINT" "$CLEAN_PNP_LINT_TMP" "$R"
@@ -2210,7 +2217,7 @@ exit 1
 EOF
 chmod +x "$FAKE_BIN_PNP_PNPM/pnpm"
 printf 'LGTB\n' > "$AGY_FAKE_DIR/output"
-(cd "$R" && env PATH="$FAKE_BIN_PNP_PNPM:$PATH" TMPDIR="$CLEAN_PNP_PNPM_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES PATH="$FAKE_BIN_PNP_PNPM:$PATH" TMPDIR="$CLEAN_PNP_PNPM_TMP" AGY_FAKE_REPO="$R" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_pnp_pnpm=$?
 assert "--clean-worktree degrades exit 3 without running pnpm when pnpm-lock.yaml overrides Yarn PnP" "[ '$rc_pnp_pnpm' -eq 3 ] && [ ! -e '$FAKE_BIN_PNP_PNPM/pnpm-ran' ] && [ -z \"\$(find '$R/.git/review-receipts/blocks' -name '*.json' 2>/dev/null)\" ] && [ -z \"\$(find '$CLEAN_PNP_PNPM_TMP' -maxdepth 1 \( -name 'gate-clean-wt.*' -o -name 'agy-review-jail.*' \))\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
 rm -rf "$FAKE_BIN_PNP_PNPM" "$CLEAN_PNP_PNPM_TMP" "$R"

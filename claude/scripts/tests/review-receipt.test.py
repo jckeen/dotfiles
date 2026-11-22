@@ -46,8 +46,24 @@ class ReceiptTests(unittest.TestCase):
             .strip()
         )
 
+    @staticmethod
+    def _is_clean_worktree_cmd(args):
+        return bool((args and args[0] == "materialize") or "--receipt-repo" in args)
+
+    @staticmethod
+    def _env_without_ceiling(**overrides):
+        env = dict(os.environ)
+        env.pop("GIT_CEILING_DIRECTORIES", None)
+        env.update(overrides)
+        return env
+
     def run_helper(self, *args, ok=True):
-        p = subprocess.run([sys.executable, str(HELPER), *args], capture_output=True, text=True)
+        p = subprocess.run(
+            [sys.executable, str(HELPER), *args],
+            capture_output=True,
+            text=True,
+            env=self._env_without_ceiling() if self._is_clean_worktree_cmd(args) else None,
+        )
         self.assertEqual(p.returncode == 0, ok, p.stdout + p.stderr)
         return p.stdout.strip()
 
@@ -3988,6 +4004,8 @@ with patch('datetime.datetime', wraps=datetime) as clock:
     # ─── clean-worktree committed reviews ──────────────────────────
 
     def run_helper_env(self, *args, env=None, ok=True):
+        if env is None and self._is_clean_worktree_cmd(args):
+            env = self._env_without_ceiling()
         process = subprocess.run(
             [sys.executable, str(HELPER), *args],
             capture_output=True,
@@ -4205,7 +4223,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         fake_home = Path(self.tmp.name) / "home"
         (fake_home / ".codex").mkdir(parents=True)
         (fake_home / ".codex" / "AGENTS.md").symlink_to(self.repo / "codex" / "AGENTS.md")
-        env = dict(os.environ, HOME=str(fake_home))
+        env = self._env_without_ceiling(HOME=str(fake_home))
 
         # Untracked .claude/settings.json passes when live AGENTS.md is clean.
         self.dirty_caller_runtime_files()
@@ -4503,7 +4521,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         (fake_home / ".codex").mkdir(parents=True)
         (fake_home / ".codex" / "AGENTS.md").symlink_to(self.repo / "codex" / "AGENTS.md")
         wt = self.new_detached_worktree()
-        esc = self.capture_clean(wt, env=dict(os.environ, HOME=str(fake_home)), ok=False)
+        esc = self.capture_clean(wt, env=self._env_without_ceiling(HOME=str(fake_home)), ok=False)
         self.assertIn("receipt repository", esc.stderr)
 
         # Restore REPO/codex directory so CODEX_HOME checks run cleanly.
@@ -4516,7 +4534,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         local_codex = self.repo / ".codex"
         local_codex.mkdir()
         (local_codex / "AGENTS.md").write_text("# Shadow CODEX_HOME\n")
-        env_codex = dict(os.environ, HOME=str(other_home), CODEX_HOME=str(local_codex))
+        env_codex = self._env_without_ceiling(HOME=str(other_home), CODEX_HOME=str(local_codex))
         ref_untracked = self.capture_clean(wt, env=env_codex, ok=False)
         self.assertIn("dirty live reviewer or gate surface", ref_untracked.stderr)
 
@@ -4598,12 +4616,26 @@ with patch('datetime.datetime', wraps=datetime) as clock:
                     str(self.repo),
                     "--head",
                     head,
-                    env=dict(os.environ, GIT_INDEX_FILE=str(idx_target)),
+                    env=self._env_without_ceiling(GIT_INDEX_FILE=str(idx_target)),
                     ok=False,
                 )
                 self.assertIn("GIT_INDEX_FILE", res.stderr)
                 self.assertEqual(caller_index.read_bytes(), before_index)
                 self.assertFalse(alt_index.exists())
+
+        res_ceiling = self.run_helper_env(
+            "materialize",
+            "--repo",
+            str(wt),
+            "--receipt-repo",
+            str(self.repo),
+            "--head",
+            head,
+            env=self._env_without_ceiling(GIT_CEILING_DIRECTORIES="/tmp"),
+            ok=False,
+        )
+        self.assertIn("GIT_CEILING_DIRECTORIES", res_ceiling.stderr)
+        self.assertEqual(caller_index.read_bytes(), before_index)
 
         # Normal materialization initializes only the temp worktree's index and leaves caller intact.
         self.run_helper(
@@ -4631,10 +4663,26 @@ with patch('datetime.datetime', wraps=datetime) as clock:
             "committed",
             "--base",
             "main",
-            env=dict(os.environ, GIT_DIR=str(self.repo / ".git")),
+            env=self._env_without_ceiling(GIT_DIR=str(self.repo / ".git")),
             ok=False,
         )
         self.assertIn("GIT_DIR", bad_cap.stderr)
+        bad_cap_ceiling = self.run_helper_env(
+            "capture",
+            "--repo",
+            str(wt),
+            "--receipt-repo",
+            str(self.repo),
+            "--reviewer",
+            "codex",
+            "--scope",
+            "committed",
+            "--base",
+            "main",
+            env=self._env_without_ceiling(GIT_CEILING_DIRECTORIES="/tmp"),
+            ok=False,
+        )
+        self.assertIn("GIT_CEILING_DIRECTORIES", bad_cap_ceiling.stderr)
         snap = self.capture_clean(wt, base="main")
         self.assertTrue(snap.exists())
         self.git("worktree", "remove", "--force", str(wt))
@@ -4660,7 +4708,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         (live_ref_dir / "notes.md").symlink_to(ref_md)
 
         wt = self.new_detached_worktree()
-        env_home = dict(os.environ, HOME=str(fake_home))
+        env_home = self._env_without_ceiling(HOME=str(fake_home))
 
         ref_md.write_text("# Uncommitted dirty notes\n")
         dirty_res = self.capture_clean(wt, env=env_home, ok=False)
@@ -4713,7 +4761,9 @@ with patch('datetime.datetime', wraps=datetime) as clock:
             str(entry / "link" / ".." / repo_real.name / "AGENTS.md")
         )
         (self.repo / "AGENTS.md").write_text("# Dirty via symlink/../repo traversal\n")
-        res_link = self.capture_clean(wt, env=dict(os.environ, HOME=str(fake_home)), ok=False)
+        res_link = self.capture_clean(
+            wt, env=self._env_without_ceiling(HOME=str(fake_home)), ok=False
+        )
         self.assertIn("dirty live reviewer or gate surface", res_link.stderr)
         self.git("checkout", "--", "AGENTS.md")
 
@@ -4721,8 +4771,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         clean_home = Path(self.tmp.name) / "clean-dotdot-home"
         clean_home.mkdir()
         (self.repo / ".codex" / "AGENTS.md").write_text("# Dirty via CODEX_HOME traversal\n")
-        codex_env = dict(
-            os.environ,
+        codex_env = self._env_without_ceiling(
             HOME=str(clean_home),
             CODEX_HOME=str(entry / "link" / ".." / repo_real.name / ".codex"),
         )
@@ -4738,8 +4787,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         outside_codex = repo_real.parent / "outside" / ".codex"
         outside_codex.mkdir(parents=True, exist_ok=True)
         (outside_codex / "AGENTS.md").write_text("# Outside AGENTS\n")
-        outside_env = dict(
-            os.environ,
+        outside_env = self._env_without_ceiling(
             HOME=str(clean_home),
             CODEX_HOME=str(repo_real / ".." / "outside" / ".codex"),
         )
@@ -4768,7 +4816,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         (fake_home / ".codex" / "AGENTS.override.md").symlink_to(self.repo / "AGENTS.override.md")
 
         wt = self.new_detached_worktree()
-        base_env = dict(os.environ, HOME=str(fake_home))
+        base_env = self._env_without_ceiling(HOME=str(fake_home))
 
         def cap_exec(wt_dir, *extra, env=base_env, ok=True):
             res = self.run_helper_env(
@@ -5360,7 +5408,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         (fake_home / ".codex").mkdir(parents=True)
         (fake_home / ".codex" / "AGENTS.md").symlink_to(self.repo / "AGENTS.md")
         cap_live = self.capture_clean(
-            wt, base="main", env=dict(os.environ, HOME=str(fake_home)), ok=False
+            wt, base="main", env=self._env_without_ceiling(HOME=str(fake_home)), ok=False
         )
         self.assertIn("dirty live reviewer or gate surface", cap_live.stderr)
         self.assertIn("AGENTS.md", cap_live.stderr)
@@ -5392,7 +5440,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
         clean_home = Path(self.tmp.name) / "nm-clean-home"
         clean_home.mkdir()
         wt = self.new_detached_worktree("wt-nm-active")
-        clean_env = dict(os.environ, HOME=str(clean_home))
+        clean_env = self._env_without_ceiling(HOME=str(clean_home))
         clean_env.pop("CODEX_GATE_BIN", None)
         clean_env.pop("CODEX_HOME", None)
 
@@ -5464,7 +5512,7 @@ with patch('datetime.datetime', wraps=datetime) as clock:
 
         clean_home = Path(self.tmp.name) / "opt-gates-home"
         clean_home.mkdir()
-        env_opt = dict(os.environ, HOME=str(clean_home))
+        env_opt = self._env_without_ceiling(HOME=str(clean_home))
         env_opt.pop("CODEX_HOME", None)
         env_opt.pop("CLAUDE_CONFIG_DIR", None)
         env_opt.pop("CODEX_GATE_BIN", None)

@@ -3168,7 +3168,7 @@ pwd -P > "$CODEX_FAKE_DIR/cwd"
 [ ! -e ".claude/settings.json" ] || touch "$CODEX_FAKE_DIR/saw-settings"
 [ ! -e ".env.local" ] || touch "$CODEX_FAKE_DIR/saw-env"
 EOF
-out_clean="$(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
+out_clean="$(cd "$R" && env -u GIT_CEILING_DIRECTORIES HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
 rc_clean=$?
 CHECK_OUTPUT="$out_clean"
 assert "--clean-worktree committed review passes with untracked .claude/settings.json and .env.local" "[ '$rc_clean' -eq 0 ] && grep -qF 'Codex review passed' <<<\"\$CHECK_OUTPUT\""
@@ -3180,7 +3180,7 @@ rm -f "$CODEX_FAKE_DIR/mutate" "$CODEX_FAKE_DIR/cwd" "$CODEX_FAKE_DIR/saw-settin
 # Low-finding issue filing still uses caller's real branch name (not detached HEAD).
 git -C "$R" remote add origin https://github.com/acme/widgets.git
 low_finding "clean-wt branch nit" "code.txt"
-(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require >/dev/null 2>&1)
 rc_low=$?
 assert "--clean-worktree issue filing records caller branch name" "[ '$rc_low' -eq 0 ] && grep -qF '**Branch:** \`feature\`' '$CODEX_FAKE_DIR/created-bodies'"
 assert "--clean-worktree cleans up after low-finding pass" "[ -z \"\$(ls -A '$CLEAN_TEST_TMP')\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
@@ -3188,7 +3188,7 @@ assert "--clean-worktree cleans up after low-finding pass" "[ -z \"\$(ls -A '$CL
 # Blocking verdict under --clean-worktree records block + retained output in caller repo
 # and retires an earlier approval.
 blocking_verdict
-(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1)
 rc_block=$?
 assert "--clean-worktree blocking verdict exits 2" "[ '$rc_block' -eq 2 ]"
 assert "--clean-worktree blocking verdict records block marker and retains review in caller repo" "[ \"\$(block_markers)\" -ge 1 ] && [ -n \"\$(retained)\" ] && ! python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
@@ -3197,13 +3197,13 @@ assert "--clean-worktree cleans up temp dir and metadata on block" "[ -z \"\$(ls
 # SIGTERM cancellation under --clean-worktree invalidates lane and cleans detached worktree.
 rm -rf "$R/.git/review-receipts/blocks"
 approve_clean
-(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1) || true
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1) || true
 assert "re-seeded clean-worktree receipt validates before cancellation test" "python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
 cat > "$CODEX_FAKE_DIR/mutate" <<'EOF'
 kill -TERM "$(cat "$CODEX_FAKE_DIR/gate-pid")"
 sleep 0.2
 EOF
-(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" bash -c 'echo $$ > "$CODEX_FAKE_DIR/gate-pid"; exec "$@"' _ "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" bash -c 'echo $$ > "$CODEX_FAKE_DIR/gate-pid"; exec "$@"' _ "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1)
 rc_cancel=$?
 rm -f "$CODEX_FAKE_DIR/mutate" "$CODEX_FAKE_DIR/gate-pid"
 assert "--clean-worktree cancellation exits 3, invalidates receipt, and removes detached worktree" "[ '$rc_cancel' -eq 3 ] && [ ! -e '$R/.git/review-receipts/codex.json' ] && [ -z \"\$(ls -A '$CLEAN_TEST_TMP')\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
@@ -3237,7 +3237,7 @@ git -C "$R" config filter.demo.clean "cat"
 mkdir -p "$R/.claude"
 printf '{"permissions":{}}\n' > "$R/.claude/settings.json"
 approve_clean
-(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --base '@{upstream}' --require --no-issues >/dev/null 2>&1)
+(cd "$R" && env -u GIT_CEILING_DIRECTORIES HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" "$GATE" --committed --clean-worktree --base '@{upstream}' --require --no-issues >/dev/null 2>&1)
 rc_relbase=$?
 assert "--clean-worktree never executes smudge filters and resolves @{upstream} from caller" "[ '$rc_relbase' -eq 0 ] && [ ! -e '$SMUDGE_MARKER' ] && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$R' --base '@{upstream}' --head \"\$(git -C '$R' rev-parse HEAD)\" >/dev/null 2>&1"
 
@@ -3246,7 +3246,7 @@ printf 'staged only content\n' > "$R/staged.txt"
 git -C "$R" add staged.txt
 before_idx="$(wc -c < "$R/.git/index")"
 before_stage="$(git -C "$R" ls-files --stage staged.txt)"
-out_idx="$(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" GIT_INDEX_FILE="$R/.git/index" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
+out_idx="$(cd "$R" && env -u GIT_CEILING_DIRECTORIES HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" GIT_INDEX_FILE="$R/.git/index" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
 rc_idx=$?
 has_idx_msg=0
 if grep -qF 'GIT_INDEX_FILE' <<<"$out_idx"; then
@@ -3255,6 +3255,14 @@ fi
 after_idx="$(wc -c < "$R/.git/index")"
 after_stage="$(git -C "$R" ls-files --stage staged.txt)"
 assert "--clean-worktree refuses inherited GIT_INDEX_FILE without touching caller index" "[ '$rc_idx' -eq 2 ] && [ '$has_idx_msg' -eq 1 ] && [ '$before_idx' = '$after_idx' ] && [ '$before_stage' = '$after_stage' ] && [ -z \"\$(ls -A '$CLEAN_TEST_TMP')\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
+
+out_ceiling="$(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" GIT_CEILING_DIRECTORIES="/tmp" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
+rc_ceiling=$?
+has_ceiling_msg=0
+if grep -qF 'GIT_CEILING_DIRECTORIES' <<<"$out_ceiling"; then
+  has_ceiling_msg=1
+fi
+assert "--clean-worktree refuses explicit GIT_CEILING_DIRECTORIES" "[ '$rc_ceiling' -eq 2 ] && [ '$has_ceiling_msg' -eq 1 ] && [ -z \"\$(ls -A '$CLEAN_TEST_TMP')\" ] && [ \"\$(git -C '$R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
 
 # Uncommitted CODEX_GATE_BIN inside caller repo fails closed under --clean-worktree.
 mkdir -p "$R/codex"
@@ -3265,7 +3273,7 @@ exit 0
 EOF
 chmod +x "$R/codex/fake-codex"
 rm -f "$CODEX_FAKE_DIR/untracked-bin-ran"
-out_bin="$(cd "$R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" CODEX_GATE_BIN="$R/codex/fake-codex" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
+out_bin="$(cd "$R" && env -u GIT_CEILING_DIRECTORIES HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" CODEX_GATE_BIN="$R/codex/fake-codex" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
 rc_bin=$?
 has_bin_msg=0
 if grep -qF 'dirty live reviewer or gate surface' <<<"$out_bin"; then
@@ -3283,7 +3291,7 @@ git -C "$R" commit -qm "tracked PATH codex launcher"
 rm -f "$R/bin/codex" "$CODEX_FAKE_DIR/invoked"
 ln -s "$SHIM_DIR/codex" "$R/bin/codex"
 approve_clean
-out_path_esc="$(cd "$R" && env -u CODEX_GATE_BIN HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" PATH="$R/bin:$PATH" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
+out_path_esc="$(cd "$R" && env -u GIT_CEILING_DIRECTORIES -u CODEX_GATE_BIN HOME="$TEST_HOME" TMPDIR="$CLEAN_TEST_TMP" PATH="$R/bin:$PATH" "$GATE" --committed --clean-worktree --require --no-issues 2>&1)"
 rc_path_esc=$?
 has_path_esc_msg=0
 if grep -qF 'receipt repository' <<<"$out_path_esc"; then
@@ -3309,7 +3317,7 @@ git -C "$SEP_R" commit -qam "ahead"
 mkdir -p "$SEP_R/.claude"
 printf '{"permissions":{}}\n' > "$SEP_R/.claude/settings.json"
 approve_clean
-(cd "$SEP_R" && env HOME="$TEST_HOME" TMPDIR="$CLEAN_SEP_TMP" "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1)
+(cd "$SEP_R" && env -u GIT_CEILING_DIRECTORIES HOME="$TEST_HOME" TMPDIR="$CLEAN_SEP_TMP" "$GATE" --committed --clean-worktree --require --no-issues >/dev/null 2>&1)
 rc_sep=$?
 assert "--clean-worktree supports --separate-git-dir primary checkout" "[ '$rc_sep' -eq 0 ] && python3 '$SCRIPT_DIR/../review-receipt.py' check --repo '$SEP_R' --head \"\$(git -C '$SEP_R' rev-parse HEAD)\" >/dev/null 2>&1 && [ -z \"\$(ls -A '$CLEAN_SEP_TMP')\" ] && [ \"\$(git -C '$SEP_R' worktree list --porcelain | grep -c '^worktree ')\" -eq 1 ]"
 rm -rf "$SEP_META" "$SEP_R" "$CLEAN_SEP_TMP"

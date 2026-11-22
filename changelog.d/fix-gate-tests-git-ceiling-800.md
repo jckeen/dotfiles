@@ -1,0 +1,3 @@
+## 2026-11-21 — test(gates): unset GIT_CEILING_DIRECTORIES on clean-worktree test calls (#800)
+
+- **Clean-worktree gate and receipt tests**: stripped `GIT_CEILING_DIRECTORIES` (set around every suite by `run-tests.sh` to isolate temp fixtures from ambient Git repos) specifically on `--clean-worktree`, `materialize`, and `--receipt-repo` subprocess calls in `review-receipt.test.py`, `codex-review-gate.test.sh`, and `antigravity-review-gate.test.sh`, while preserving runner confinement for `"outside Git"` tests and adding explicit regression assertions that deliberate `GIT_CEILING_DIRECTORIES` overrides are still refused.
